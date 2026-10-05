@@ -10,6 +10,7 @@
 !/office-standalone/README.md
 !/office-standalone/web/
 !/office-standalone/tests/
+!/office-standalone/frontend/
 
 /office-standalone/tests/*
 !/office-standalone/tests/test_*.py
@@ -26,3 +27,4 @@
 **/.local/
 **/.runtime/
 **/node_modules/
+**/.vite/

@@ -1,17 +1,15 @@
-# Hermes Control Room
+# Hermes HQ local server
 
-Local pixel dashboard for monitoring existing Hermes bots in one shared office. The backend reads gateway status; it does not execute agent tasks or call model providers.
+Python's standard-library server connects an existing Hermes dashboard to the React/Three.js office. It uses fixed read endpoints to observe bots and does not execute agent tasks or call model providers.
 
-Set `HERMES_URL` to the existing dashboard URL, then run `python app.py --port 9140`. `OFFICE_DATA_DIR` chooses the private runtime directory. See the root README for PowerShell examples.
+Set `HERMES_URL` to an existing HTTPS dashboard and run `python app.py --port 9140`. `OFFICE_DATA_DIR` chooses the private runtime directory. See the [root README](../README.md) for PowerShell commands and the [frontend guide](frontend/README.md) for build/event details.
 
-Bot identities come from the source's actual profiles. Gateway status determines working/idle; recent sessions are not treated as proof of work. Ambiguous or unavailable runtime status remains unknown, and cached data is marked stale on failure.
+The default bind is loopback. Publishing GitHub source does not deploy Office. The earlier VPS installation has been removed.
 
-The application uses Python's standard library and polls only while a viewer is active. The main status mode does not require a model key. Detailed sessions remain available in the original Hermes dashboard; the optional `/connect.html` form uses an existing Hermes dashboard account to read additional session metadata. Its password is discarded after an official login, and resulting cookies stay in the private runtime directory. The account's authenticated session carries its normal permissions, while this app uses a fixed set of read endpoints.
+Bot identities and statuses come from actual Hermes profiles and gateway metadata. An active gateway or a recent session is not treated as proof of current work. Missing task progress and metrics remain unknown. Decorative movement is separate from monitored status. Explicit simulation mode stays local and makes no upstream task calls.
 
-The default bind is loopback. Office currently runs locally; the earlier VPS installation has been removed. Publishing the repository does not deploy it.
+The optional `/connect.html` form uses an existing Hermes dashboard account to read private sessions. Its password is discarded after an official login. Session cookies stay in the ignored runtime directory; this app uses a fixed set of read endpoints even though the authenticated account retains its normal permissions.
 
-The Audit chat workspace reads private session history for an explicitly selected bot and session. Connect the existing Hermes dashboard account at `/connect.html` to enable this view. Conversation content stays outside `/api/state`, status snapshots, and Git; missing timestamps or unavailable history are shown explicitly. This is a history viewer rather than a permanent record of sessions deleted at the source.
+Chat requests require an explicit bot and prove session ownership before returning messages. Transcript content stays out of `/api/state`, disk snapshots, and Git. Cached history is scoped to the authenticated source. Tool metadata and absent timestamps are shown explicitly. This viewer cannot preserve sessions deleted at the source.
 
-Choose a bot or its desk to open that bot's conversation history. Bot chips and channel filters keep sessions separated. Idle characters walk along clear floor paths and take breaks; working characters return to their assigned desks. Movement is cosmetic and can be paused. Reduced motion is respected by default, with an explicit tab-level enable control.
-
-Sprites are reused from NosytLabs/agent-office. Attribution and license files are included in `web/assets`.
+The React frontend is in `frontend/`. Its build is served from `web/3d`, with `web/index.html` as the main entry. The 3D scene uses local geometry and respects reduced motion. Historical pixel assets remain in `web/assets` with their original license notices.

@@ -1,0 +1,27 @@
+import React from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
+import { Avatar, Icon, StatusBadge, formatTime, metric } from './ui.jsx';
+
+export default function AgentPanel({ agent, mode, onClose, onAction, source }) {
+  const reducedMotion = useReducedMotion();
+  const task = typeof agent.currentTask === 'string' ? agent.currentTask : agent.currentTask?.title;
+  const activity = typeof agent.currentActivity === 'string' ? agent.currentActivity : '';
+  const progress = typeof agent.progress === 'number' && Number.isFinite(agent.progress) ? Math.max(0, Math.min(100, agent.progress)) : null;
+  const tools = Array.isArray(agent.tools) ? agent.tools : [];
+  const conversations = Array.isArray(agent.recentConversations) ? agent.recentConversations.slice(0, 3) : [];
+  const responseTime = typeof agent.responseTime === 'number' && Number.isFinite(agent.responseTime) ? agent.responseTime < 1000 ? `${Math.round(agent.responseTime)} ms` : `${new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 }).format(agent.responseTime / 1000)} s` : metric(agent.responseTime);
+  return <motion.aside className="agent-panel" aria-label={`Detail ${agent.name}`} initial={reducedMotion ? false : { opacity: 0, x: 30, y: 8 }} animate={{ opacity: 1, x: 0, y: 0 }} exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: 20 }} transition={{ duration: 0.23, ease: [0.2, 0.8, 0.2, 1] }}>
+    <div className="panel-topline"><span className="eyebrow">AGENT PROFILE</span><button className="icon-button" onClick={onClose} aria-label="Tutup detail agen"><Icon name="close" /></button></div>
+    <div className="agent-identity"><Avatar agent={agent} size="large" /><div><h2>{agent.name || agent.id}</h2><p>{agent.role || 'Hermes bot'}</p><StatusBadge status={agent.status} visualState={agent.visualState} demo={mode === 'demo'} /></div></div>
+    {mode === 'demo' && <p className="simulation-note">Agen dan tugas di panel ini adalah simulasi.</p>}
+    <div className="panel-scroll">
+      <section className="task-section"><div className="section-label"><span>{!task && activity ? 'Aktivitas terbaru' : 'Tugas saat ini'}</span>{progress !== null && <span>{Math.round(progress)}%</span>}</div><p className={`task-title ${!task && !activity ? 'unavailable' : ''}`}>{task || activity || '—'}</p>{progress !== null ? <div className="progress-track" role="progressbar" aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100} aria-label="Progres tugas"><span style={{ width: `${progress}%` }} /></div> : <p className="micro-copy">{!task && activity ? 'Pesan atau tool terbaru yang tercatat.' : 'Hermes belum menyediakan detail tugas.'}</p>}</section>
+      <div className="agent-meta-row"><Icon name="log" size={15} /><span>Aktivitas terakhir</span><time>{formatTime(agent.lastActivity || agent.last_active, '—')}</time></div>
+      <section className="tools-section"><h3>Tools</h3><div className="tool-chips">{tools.length ? tools.map((tool, index) => <span key={`${typeof tool === 'string' ? tool : tool.name}-${index}`}>{typeof tool === 'string' ? tool : tool.name || 'Tool'}</span>) : <span className="unavailable-tool">—</span>}</div></section>
+      <section className="recent-section"><div className="section-label"><span>Percakapan terbaru</span><Icon name="chat" size={16} /></div>{conversations.length && mode !== 'demo' ? conversations.map(session => <button key={session.id} className="recent-conversation" onClick={() => onAction('conversations', session.id)}><span className="recent-conversation-icon"><Icon name="chat" size={15} /></span><span><strong>{session.title || session.id}</strong><small>{session.source || 'Kanal —'} · {formatTime(session.last_active, 'Waktu —')}</small></span><Icon name="chevron" size={15} /></button>) : <button className="recent-conversation" onClick={() => onAction('conversations')}><span className="recent-conversation-icon"><Icon name="chat" /></span><span><strong>Buka riwayat {agent.name || 'agen'}</strong><small>{mode === 'demo' ? 'Riwayat asli tersedia di mode live' : source?.sessions_available ? 'Belum ada sesi terbaru yang tercatat' : 'Hubungkan untuk melihat isi percakapan'}</small></span><Icon name="chevron" size={15} /></button>}</section>
+      <div className="agent-metrics"><div><strong>{metric(agent.completedToday)}</strong><span>Selesai hari ini</span></div><div><strong>{responseTime}</strong><span>Rata-rata respons</span></div></div>
+      <div className="panel-links"><button onClick={() => onAction('tasks')}><Icon name="task" size={16} />Tasks<Icon name="chevron" size={13} /></button><button onClick={() => onAction('logs')}><Icon name="log" size={16} />Logs<Icon name="chevron" size={13} /></button></div>
+    </div>
+    <div className="panel-actions"><button className="primary-button conversation-action" onClick={() => onAction('conversations')}><Icon name="chat" size={17} />Conversation<Icon name="arrow" size={16} /></button><div className="control-actions"><button disabled aria-describedby="read-only-hint"><Icon name="pause" size={14} />Pause Agent</button><button disabled aria-describedby="read-only-hint"><Icon name="reset" size={14} />Restart Agent</button></div><p id="read-only-hint" className="read-only-hint">Kontrol agen belum tersedia. {source?.url && <a href={source.url} target="_blank" rel="noreferrer">Kelola di Hermes <Icon name="external" size={10} /></a>}</p></div>
+  </motion.aside>;
+}

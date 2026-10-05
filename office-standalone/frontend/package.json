@@ -1,0 +1,24 @@
+{
+  "name": "hermes-hq-office",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 9142 --strictPort",
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@react-three/drei": "10.7.9",
+    "@react-three/fiber": "9.8.1",
+    "framer-motion": "12.43.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "vite": "7.3.6"
+  },
+  "engines": { "node": "^20.19.0 || >=22.12.0" }
+}
