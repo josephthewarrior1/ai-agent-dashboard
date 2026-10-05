@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#111b32">
+  <title>Hermes Control Room</title><link rel="stylesheet" href="/styles.css"><script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="office-shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-icon" aria-hidden="true">▥</span><div><h1>HERMES CONTROL ROOM</h1><span class="brand-sub">PANTAU BOT · KANTOR PIXEL</span></div></div>
+      <div class="connection"><span class="signal" id="connection-signal" aria-hidden="true"></span><span id="connection-status" role="status">Menyambungkan Hermes…</span></div>
+      <time id="clock" class="clock" aria-label="Waktu lokal">--:--:--</time>
+    </header>
+    <main class="workspace">
+      <aside class="team-panel panel" aria-labelledby="team-heading">
+        <div class="panel-heading"><h2 id="team-heading">BOT HERMES</h2><span class="tiny-label" id="session-count">—</span></div>
+        <div class="search-wrap"><label class="visually-hidden" for="session-search">Cari bot Hermes</label><input id="session-search" type="search" placeholder="Cari bot atau aktivitas…" autocomplete="off"></div>
+        <nav class="team-list" id="team-list" aria-label="Bot Hermes"><p class="list-message">Menyambungkan Hermes…</p></nav>
+        <div class="server-note"><span class="tiny-label">SUMBER HERMES</span><strong id="source-status">Menunggu koneksi</strong><p id="source-detail">Bot dan aktivitas akan muncul setelah sumber terhubung.</p><a id="source-link" class="source-link" target="_blank" rel="noopener noreferrer" hidden>Buka Hermes <span aria-hidden="true">↗</span></a><a id="connect-link" class="source-link" href="/connect.html" hidden>Hubungkan Hermes <span aria-hidden="true">↗</span></a><p id="gateway-detail" class="gateway-detail" hidden></p></div>
+        <div class="team-legend"><span><i class="status-dot idle"></i>Idle</span><span><i class="status-dot working"></i>Bekerja</span><span><i class="status-dot unknown"></i>Belum pasti</span></div>
+      </aside>
+      <section class="floor-panel" aria-labelledby="floor-heading">
+        <div class="floor-heading"><div><span class="tiny-label">LANTAI KANTOR</span><h2 id="floor-heading">Satu kantor. Satu tim.</h2></div><span class="floor-note">Pilih meja untuk melihat aktivitas</span></div>
+        <nav class="filters" aria-label="Filter status bot"><button type="button" data-filter="all" aria-pressed="true">Semua <span id="count-all">—</span></button><button type="button" data-filter="working" aria-pressed="false">Bekerja <span id="count-working">—</span></button><button type="button" data-filter="idle" aria-pressed="false">Idle <span id="count-idle">—</span></button><button type="button" data-filter="unknown" aria-pressed="false">Belum pasti <span id="count-unknown">—</span></button><button type="button" data-filter="offline" aria-pressed="false">Offline <span id="count-offline">—</span></button></nav>
+        <div class="shared-floor panel">
+          <div class="office-strip"><span>HERMES HQ</span><span id="office-occupancy">MENUNGGU BOT</span></div>
+          <div class="office-stage" id="office-stage"><canvas id="office-scene" width="640" height="410" aria-hidden="true"></canvas><div class="desk-targets" id="desk-targets" role="group" aria-label="Meja bot di kantor bersama"></div></div>
+          <div class="office-status"><span class="status-dot unknown" id="office-source-dot" aria-hidden="true"></span><span id="office-message" role="status">Menyambungkan Hermes…</span><span class="office-keyhint">Tab untuk pilih meja</span></div>
+        </div>
+        <p class="floor-caption"><span class="caption-mark" aria-hidden="true">▧</span> Semua bot berbagi lantai yang sama, termasuk saat idle. Status mengikuti Hermes.</p>
+      </section>
+      <section class="activity-panel panel" aria-labelledby="activity-heading">
+        <div class="panel-heading"><h2 id="activity-heading">AKTIVITAS BOT</h2><span class="tiny-label">BACA SAJA</span></div>
+        <div class="selected-agent" id="selected-agent" hidden><canvas id="selected-avatar" width="16" height="32" aria-hidden="true"></canvas><div><h3 id="selected-name"></h3><p id="selected-platform"></p></div><span class="agent-status" id="selected-status"></span></div>
+        <div class="session-details" id="session-details" hidden><p id="selected-detail"></p><span class="detail-time" id="selected-updated"></span><a id="session-link" class="source-link" target="_blank" rel="noopener noreferrer" hidden>Buka sesi asli <span aria-hidden="true">↗</span></a></div>
+        <div class="log-heading"><h3>Sesi terbaru</h3><span id="selected-session-count" class="tiny-label">—</span></div><div id="sessions-log" class="sessions-log"></div>
+        <div class="log-heading"><h3>Aktivitas terakhir</h3><span id="event-count" class="tiny-label">—</span></div>
+        <div class="activity-log" id="activity-log"><div class="empty-log"><span aria-hidden="true">▤</span><p>Pilih bot untuk melihat aktivitas.</p><small>Aktivitas muncul dari Hermes yang terhubung.</small></div></div>
+        <p class="monitor-note">Balas pertanyaan dan lanjutkan tugas lewat sesi Hermes aslinya.</p>
+      </section>
+    </main>
+    <footer class="footer"><span>HERMES <span class="footer-separator">/</span> CONTROL ROOM</span><span id="last-update">Belum menerima data</span></footer>
+  </div>
+</body>
+</html>

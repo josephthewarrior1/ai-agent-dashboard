@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Detail sesi Hermes · Control Room</title>
+  <style>
+    :root{color-scheme:dark;font-family:Segoe UI,Arial,sans-serif;color:#dfe9ff;background:#0c172a}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}
+    main{width:min(100%,510px);padding:30px;background:#15243d;border:1px solid #3b5375;border-radius:12px;box-shadow:0 20px 60px #0005}
+    .eyebrow{font:12px Consolas,monospace;color:#8caad6;letter-spacing:.12em}h1{font-size:26px;margin:15px 0}p{line-height:1.6;color:#b9cae5}
+    .source{font:12px Consolas,monospace;overflow-wrap:anywhere;background:#0c172a;padding:13px;border:1px solid #344e70;border-radius:6px}
+    label{display:block;margin:20px 0 7px;color:#dfe9ff}input{width:100%;font:inherit;color:inherit;background:#0d1a2e;border:1px solid #4b6387;border-radius:6px;padding:12px}
+    button{width:100%;margin-top:22px;padding:13px;border:1px solid #84b6f0;border-radius:6px;background:#244e80;color:#fff;font:600 16px Segoe UI,Arial,sans-serif;cursor:pointer}
+    button:disabled{opacity:.5;cursor:wait}input:focus-visible,button:focus-visible,a:focus-visible{outline:3px solid #f6c16b;outline-offset:3px}
+    a{color:#9dc9ff}.note{font-size:13px}.message{min-height:24px;color:#f6c16b}footer{margin-top:25px;font-size:14px}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">HERMES → CONTROL ROOM</div>
+    <h1>Tambahkan detail sesi Hermes</h1>
+    <p>Status bot sudah bisa dipantau. Pakai akun <strong>dashboard Hermes yang sudah ada</strong> kalau lo juga mau melihat detail sesi di control room.</p>
+    <div class="source" id="source">Memeriksa koneksi…</div>
+    <form id="connect-form">
+      <label for="username">Username dashboard Hermes</label>
+      <input id="username" name="username" autocomplete="username" value="hermes" required maxlength="200">
+      <label for="password">Password dashboard Hermes</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096">
+      <button id="submit" disabled>Hubungkan detail sesi</button>
+    </form>
+    <p class="note">Password dikirim lewat koneksi aman ke Hermes lalu dibuang. Control room di VPS lo menyimpan sesi login untuk membaca status dan sesi bot. Masukkan password langsung di sini, jangan di chat.</p>
+    <p class="message" id="message" role="status" aria-live="polite"></p>
+    <footer><a href="/">← Kembali ke control room</a></footer>
+  </main>
+  <script>
+    let connectToken='';
+    const form=document.getElementById('connect-form'),button=document.getElementById('submit'),message=document.getElementById('message');
+    fetch('/api/connect-options',{cache:'no-store',credentials:'same-origin'}).then(async response=>{
+      if(!response.ok)throw new Error('Koneksi belum siap. Muat ulang halaman.');
+      const data=await response.json();
+      connectToken=data.csrf_token||data.token||'';
+      document.getElementById('source').textContent=data.source_url||data.url||'Dashboard Hermes';
+      if(!connectToken)throw new Error('Koneksi belum siap. Muat ulang halaman.');
+      button.disabled=false;
+    }).catch(error=>message.textContent=error.message);
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();button.disabled=true;message.textContent='Menghubungkan ke Hermes…';
+      const password=document.getElementById('password');
+      const body=JSON.stringify({username:document.getElementById('username').value.trim(),password:password.value});
+      password.value='';
+      try{
+        const response=await fetch('/api/connect',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':connectToken},body});
+        const data=await response.json();
+        if(!response.ok||data.ok===false)throw new Error(data.message||data.error||'Login belum berhasil. Periksa username dan password Hermes.');
+        message.textContent='Hermes terhubung. Membuka control room…';
+        location.assign('/');
+      }catch(error){message.textContent=error.message;button.disabled=false;}
+    });
+  </script>
+</body>
+</html>
