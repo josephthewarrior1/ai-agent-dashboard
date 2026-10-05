@@ -26,6 +26,7 @@ Alamat ini menjalankan project di komputer tempat command tersebut dijalankan. G
 - Semua karakter dan meja berada dalam satu kantor bersama.
 - Pilih bot atau mejanya untuk langsung membuka chat bot tersebut. Filter kanal memisahkan Telegram, WhatsApp, API, dan kanal lain yang tersedia.
 - Bot idle berjalan dan berhenti di beberapa tempat di kantor; bot bekerja kembali ke meja. Gerakan hanya visual dan dapat dijeda. Jika perangkat mengurangi animasi, gunakan **Aktifkan gerak** untuk mengizinkannya pada tab ini.
+- Nama mengikuti kepala karakter. Pesan baru, balasan, dan aktivitas tool tampil sebentar sebagai bubble dekat bot; riwayat lama tidak dianggap pesan baru. Cuplikan diambil dari sesi Hermes saat kantor dibuka dan disimpan hanya di memori.
 - Buka **Audit chat** untuk memilih bot, kanal, dan sesi percakapan. Riwayat mengikuti data Hermes; status idle tidak berarti riwayat chat kosong.
 - Idle, bekerja, offline, dan status belum pasti mengikuti data gateway; sesi yang baru aktif bukan bukti bot sedang bekerja.
 - Mode utama membaca endpoint status Hermes. Provider/model AI dan API key tidak diperlukan untuk pemantauan ini.
@@ -39,6 +40,7 @@ Alamat ini menjalankan project di komputer tempat command tersebut dijalankan. G
 ```powershell
 python -B -m unittest discover -s office-standalone/tests -p 'test_*.py'
 node --test office-standalone/tests/test_motion.cjs
+node --test office-standalone/tests/test_activity.cjs
 ```
 
 Frontend memakai HTML, CSS, dan JavaScript tanpa build step. Sprite berasal dari [NosytLabs/agent-office](https://github.com/NosytLabs/agent-office). Latar kantor baru dibuat mengikuti referensi pengguna; prompt dan notice/license aset ada di `office-standalone/web/assets`.

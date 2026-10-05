@@ -49,7 +49,7 @@ function normalizeOfficeState(payload) {
     if (text(event.session_id)) parts.push(`Sesi ${event.session_id}`);
     return { id: text(event.id) || [agentId(event), text(event.session_id), timestamp, messages, tools].join(":"),
       agent_id: agentId(event), label: text(event.label) || (event.type === "activity" ? "Aktivitas sesi" : "Aktivitas Hermes"),
-      detail: parts.join(" · "), timestamp, status: text(event.status) };
+      detail: parts.join(" · "), timestamp, status: text(event.status), session_id:text(event.session_id), messages_added:messages, tools_added:tools };
   });
   return { ...raw, agents, sessions, events, source: normalizedSource, gateway: gateway(raw.gateway), updated_at: officeTimestamp(raw.updated_at) };
 }
@@ -104,7 +104,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { normaliz
   const ROLE={user:"Pengguna",assistant:"Bot",tool:"Tool",system:"Sistem"};
   let state={agents:[],sessions:[],events:[],source:{state:"connecting"},gateway:null};
   let selected=null,received=false,view=null,polling=false,pollTimer=null,pollController=null;
-  const roster=new Map(),desks=new Map(),avatars=new Map(),images=new Map(),characters=new Map();
+  const roster=new Map(),desks=new Map(),avatars=new Map(),avatarLabels=new Map(),images=new Map(),characters=new Map();
+  const activity=window.HermesOfficeActivity?.create()||null,activityTracks=new Map();
+  let officeLive=false;
   let background=null;
   const reducedMotion=matchMedia("(prefers-reduced-motion: reduce)");
   const motion=window.HermesOfficeMotion?.create()||null;
@@ -127,11 +129,20 @@ if (typeof module !== "undefined" && module.exports) module.exports = { normaliz
     const ctx=canvas.getContext("2d");ctx.imageSmoothingEnabled=false;
     if(background)ctx.drawImage(background,0,0,width,height);else{ctx.fillStyle="#17263f";ctx.fillRect(0,0,width,height);}
     const entities=motion?.getEntities()||sharedOfficeLayout(state.agents).map(position=>({...position,x:position.x,y:position.y+12,row:0,frame:state.agents.find(agent=>agent.id===position.id)?.status==="working"?3:0,mirror:false,location:"desk",moving:false}));
+    const stageWidth=canvas.getBoundingClientRect().width,stageHeight=stageWidth*height/width,now=performance.now();
+    const shown=new Set(entities.map(entity=>entity.id));avatars.forEach((avatar,id)=>{avatar.hidden=!shown.has(id);});
     entities.slice().sort((a,b)=>a.y-b.y).forEach(entity=>{
       const image=characters.get(entity.character),x=entity.x/1942*width,y=entity.y/810*height;
       if(image){ctx.save();ctx.translate(Math.round(x),Math.round(y));if(entity.mirror)ctx.scale(-1,1);ctx.drawImage(image,entity.frame*16,entity.row*32,16,32,-20,-80,40,80);ctx.restore();}
       const avatar=avatars.get(entity.id),agent=state.agents.find(item=>item.id===entity.id);
-      if(avatar&&agent){avatar.style.left=(entity.x/1942*100)+"%";avatar.style.top=(entity.y/810*100)+"%";avatar.dataset.location=entity.location||"desk";avatar.dataset.moving=String(entity.moving===true);avatar.title=agent.label;avatar.setAttribute("aria-label","Buka chat "+agent.label);avatar.setAttribute("aria-pressed",String(selected===agent.id));}
+      if(avatar&&agent){
+        avatar.style.left=(entity.x/1942*100)+"%";avatar.style.top=(entity.y/810*100)+"%";avatar.style.setProperty("--head-offset",(stageWidth*80/1942)+"px");
+        avatar.dataset.location=entity.location||"desk";avatar.dataset.moving=String(entity.moving===true);avatar.title=agent.label;avatar.setAttribute("aria-label","Buka chat "+agent.label);avatar.setAttribute("aria-pressed",String(selected===agent.id));
+        const px=entity.x/1942*stageWidth,py=entity.y/810*stageHeight;
+        avatar.classList.toggle("edge-left",px<105);avatar.classList.toggle("edge-right",px>stageWidth-105);avatar.classList.toggle("edge-top",py-stageWidth*80/1942<92);
+        const labels=avatarLabels.get(entity.id),bubble=officeLive?activity?.getBubble(agent.profile||agent.id,now,{status:agent.status}):null;
+        if(labels){const content=bubble?[bubble.label,bubble.snippet].filter(Boolean).join(" · "):"",kind=bubble?.kind||"";if(labels.name.textContent!==agent.label)labels.name.textContent=agent.label;if(labels.bubble.hidden!==!bubble)labels.bubble.hidden=!bubble;if(labels.bubbleText.textContent!==content)labels.bubbleText.textContent=content;if(labels.bubble.dataset.kind!==kind)labels.bubble.dataset.kind=kind;}
+      }
     });
     sharedOfficeLayout(state.agents).forEach(position=>{
       const agent=state.agents.find(item=>item.id===position.id);
@@ -139,9 +150,41 @@ if (typeof module !== "undefined" && module.exports) module.exports = { normaliz
       desk.button.style.left=(position.normalizedX*100)+"%";
       desk.button.style.top=((position.normalizedY-.12)*100)+"%";
       desk.button.style.width="14%";desk.button.style.height="23%";
-      const labelY=matchMedia("(max-width:800px)").matches?(position.normalizedY>.7?.82:.55):position.normalizedNameY;
-      desk.nameplate.style.top=((labelY-(position.normalizedY-.12))/.23*100)+"%";
     });
+  }
+
+  function stopOfficeActivity(){for(const track of activityTracks.values()){track.controller?.abort();track.controller=null;}}
+  async function loadOfficeActivity(agent,session,signature,track){
+    const profile=agent.profile||agent.id,controller=new AbortController(),started=performance.now();
+    track.controller=controller;track.lastAttempt=started;
+    const timeout=setTimeout(()=>controller.abort(),15000);
+    try{
+      const query=new URLSearchParams({profile,session_id:session.id,limit:"6",offset:"0",order:"latest"});
+      const payload=await api("/api/audit/messages?"+query,controller.signal),response=normalizeAuditPayload(payload);
+      if(track.controller!==controller||document.hidden||view!=="overview"||!officeLive||!state.agents.some(item=>(item.profile||item.id)===profile))return;
+      if(!response.available||payload.stale===true){track.retryAt=performance.now()+15000;return;}
+      activity?.observe(profile,payload,performance.now(),{wallTimeMs:Date.now(),sessionId:session.id,allowRecentInitial:track.initialized&&track.sessionId!==session.id});
+      track.initialized=true;track.sessionId=session.id;track.signature=signature;
+      track.retryAt=payload.cached===true&&Number.isFinite(session.message_count)&&Number.isFinite(response.session?.message_count)&&response.session.message_count<session.message_count?performance.now()+11000:0;
+      drawOffice();
+    }catch(error){if(error.name!=="AbortError")track.retryAt=performance.now()+15000;}
+    finally{clearTimeout(timeout);if(track.controller===controller)track.controller=null;}
+  }
+  function syncOfficeActivity(){
+    const profiles=new Set(state.agents.map(agent=>agent.profile||agent.id));for(const[profile,track]of activityTracks)if(!profiles.has(profile)){track.controller?.abort();activityTracks.delete(profile);activity?.clear(profile);}
+    if(!activity||document.hidden||view!=="overview"||!officeLive||state.source.sessions_available!==true||state.source.sessions_stale===true||state.source.private_detail_requires_login===true){stopOfficeActivity();return;}
+    const now=performance.now(),wall=Date.now();
+    for(const position of sharedOfficeLayout(state.agents)){
+      const agent=state.agents.find(item=>item.id===position.id),profile=agent.profile||agent.id;
+      const sessions=state.sessions.filter(session=>session.profile===profile||session.agent_id===agent.id).sort((a,b)=>(Date.parse(b.last_active)||0)-(Date.parse(a.last_active)||0));
+      const event=state.events.filter(item=>item.agent_id===agent.id&&item.session_id&&Date.parse(item.timestamp)<=wall+5000&&wall-Date.parse(item.timestamp)<30000).sort((a,b)=>Date.parse(b.timestamp)-Date.parse(a.timestamp))[0];
+      const session=sessions.find(item=>item.id===event?.session_id)||sessions[0];if(!session)continue;
+      let track=activityTracks.get(profile);if(!track){track={controller:null,lastAttempt:-Infinity,signature:"",sessionId:"",initialized:false,retryAt:0};activityTracks.set(profile,track);}
+      const signature=JSON.stringify([session.id,session.message_count,session.tool_call_count,session.last_active]);
+      if(track.controller||now-track.lastAttempt<10000||track.retryAt&&now<track.retryAt)continue;
+      if(track.signature===signature&&agent.status!=="working"&&!track.retryAt)continue;
+      loadOfficeActivity(agent,session,signature,track);
+    }
   }
   function animateOffice(now){
     animationFrame=null;
@@ -165,17 +208,19 @@ if (typeof module !== "undefined" && module.exports) module.exports = { normaliz
     const button=node("button","team-member");button.type="button";
     const monogram=node("span","bot-monogram",initials(agent.label)),info=node("span","team-info"),name=node("span","team-name"),platform=node("span","team-platform"),status=node("span","team-status"),dot=node("i","status-dot"),statusLabel=node("span");
     dot.setAttribute("aria-hidden","true");status.append(dot,statusLabel);info.append(name,platform);button.append(monogram,info,status);button.addEventListener("click",()=>chooseBot(agent.id));roster.set(agent.id,{button,monogram,name,platform,dot,statusLabel});
-    const target=node("button","desk-target");target.type="button";const nameplate=node("span","desk-nameplate"),deskName=node("span","desk-name"),deskStatus=node("span","desk-status"),deskDot=node("i","status-dot"),deskStatusText=node("span");deskDot.setAttribute("aria-hidden","true");deskStatus.append(deskDot,deskStatusText);nameplate.append(deskName,deskStatus);target.append(nameplate);target.addEventListener("click",()=>{chooseBot(agent.id);openAudit();});desks.set(agent.id,{button:target,nameplate,name:deskName,dot:deskDot,status:deskStatusText});
-    const avatar=node("button","avatar-target");avatar.type="button";avatar.dataset.agentId=agent.id;avatar.addEventListener("click",()=>{chooseBot(agent.id);openAudit();});avatars.set(agent.id,avatar);$("avatar-targets").append(avatar);
+    const target=node("button","desk-target");target.type="button";target.addEventListener("click",()=>{chooseBot(agent.id);openAudit();});desks.set(agent.id,{button:target});
+    const avatar=node("button","avatar-target");avatar.type="button";avatar.dataset.agentId=agent.id;
+    const avatarName=node("span","avatar-name",agent.label),bubble=node("span","avatar-bubble"),bubbleText=node("span","avatar-bubble-text");bubble.hidden=true;bubble.append(bubbleText);avatar.append(avatarName,bubble);avatarLabels.set(agent.id,{name:avatarName,bubble,bubbleText});
+    avatar.addEventListener("click",()=>{chooseBot(agent.id);openAudit();});avatars.set(agent.id,avatar);$("avatar-targets").append(avatar);
   }
   function renderOverview(){
     const ids=new Set(state.agents.map(agent=>agent.id));
-    for(const[id,item]of roster)if(!ids.has(id)){item.button.remove();desks.get(id)?.button.remove();avatars.get(id)?.remove();roster.delete(id);desks.delete(id);avatars.delete(id);}
+    for(const[id,item]of roster)if(!ids.has(id)){item.button.remove();desks.get(id)?.button.remove();avatars.get(id)?.remove();roster.delete(id);desks.delete(id);avatars.delete(id);avatarLabels.delete(id);activityTracks.get(id)?.controller?.abort();activityTracks.delete(id);}
     $("team-list").querySelectorAll(".list-message").forEach(item=>item.remove());
     state.agents.forEach(agent=>{
       if(!roster.has(agent.id))createBot(agent);const item=roster.get(agent.id),desk=desks.get(agent.id);
       item.name.textContent=agent.label;item.platform.textContent=agent.platforms.join(" · ")||"Hermes";item.monogram.textContent=initials(agent.label);item.dot.className="status-dot "+agent.status;item.statusLabel.textContent=STATUS[agent.status];item.button.setAttribute("aria-pressed",String(selected===agent.id));
-      desk.name.textContent=agent.label;desk.status.textContent=STATUS[agent.status];desk.dot.className="status-dot "+agent.status;desk.button.setAttribute("aria-pressed",String(selected===agent.id));desk.button.setAttribute("aria-label","Pilih "+agent.label+", "+STATUS[agent.status]);desk.button.title=agent.label+" · "+STATUS[agent.status];
+      desk.button.setAttribute("aria-pressed",String(selected===agent.id));desk.button.setAttribute("aria-label","Buka meja "+agent.label);desk.button.title=agent.label;
       if(item.button.parentElement!==$("team-list"))$("team-list").append(item.button);if(desk.button.parentElement!==$("desk-targets"))$("desk-targets").append(desk.button);
     });
     if(!state.agents.length)$("team-list").append(node("p","list-message",received?"Belum ada bot tersedia dari Hermes.":"Menyambungkan Hermes…"));
@@ -195,7 +240,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { normaliz
     const gateway=state.gateway;$("gateway-detail").hidden=!gateway;
     if(gateway){const parts=[gateway.running===true?"Gateway aktif":gateway.running===false?"Gateway tidak aktif":"Gateway belum terverifikasi"];if(Number.isFinite(gateway.active_agents)&&gateway.scope==="all_profiles")parts.push(gateway.active_agents+" pekerjaan aktif");else if(Number.isFinite(gateway.active_agents)&&gateway.scope==="default")parts.push(gateway.active_agents+" pekerjaan gateway utama");$("gateway-detail").textContent=parts.join(" · ");}
     const stamp=source.last_success_at||state.updated_at;$("last-update").textContent=stamp?"Data terakhir "+time(stamp):"Belum menerima data";
-    $("office-message").textContent=source.state==="connected"?"Status dari Hermes. Pilih meja atau bot untuk membuka chat.":SOURCE[source.state]||"Menunggu data Hermes.";
+    $("office-message").textContent=source.state==="connected"?"Klik bot untuk membuka chat. Pesan baru muncul di dekat bot.":SOURCE[source.state]||"Menunggu data Hermes.";
     $("office-source-dot").className="status-dot "+(source.state==="connected"?"working":"unknown");
     renderAuditAccess();
   }
@@ -223,7 +268,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { normaliz
     document.querySelectorAll("[data-view]").forEach(button=>{if(button.dataset.view===next)button.setAttribute("aria-current","page");else button.removeAttribute("aria-current");});
     if(updateHash&&location.hash!=="#"+next)history.replaceState(null,"","#"+next);
     if(next==="audit"){syncProfiles();if(audit.profile&&audit.available===null&&!audit.loadingSessions)loadSessions();}
-    syncMotion();
+    syncMotion();syncOfficeActivity();
   }
   function showState(target,title,detail,options={}){
     const box=node("div","empty-state"+(options.compact?" compact":""));
@@ -312,8 +357,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { normaliz
   function schedulePoll(){clearTimeout(pollTimer);if(!document.hidden)pollTimer=setTimeout(poll,5000);}
   async function poll(){
     if(polling||document.hidden)return;clearTimeout(pollTimer);polling=true;const controller=new AbortController();pollController=controller;const timer=setTimeout(()=>controller.abort(),15000);
-    try{const next=normalizeOfficeState(await api("/api/state",controller.signal));state=next;state.agents=state.agents.map(agent=>({...agent,status:STATUS[agent.status]?agent.status:"unknown"}));received=true;if(!state.agents.some(agent=>agent.id===selected))selected=state.agents[0]?.id||null;motion?.update(state.agents,performance.now(),motionOptions());renderOverview();renderSource();syncProfiles();syncMotion();}
-    catch(error){if(!(error.name==="AbortError"&&document.hidden)){$("connection-status").textContent=error.status===401?"Masuk diperlukan":"Koneksi terputus";$("connection-signal").className="status-dot disconnected";$("office-source-dot").className="status-dot unknown";$("office-message").textContent=received?"Koneksi terputus. Status terakhir tetap ditampilkan.":"Menunggu koneksi. Kantor siap menampilkan bot.";$("source-detail").textContent=error.message;}}
+    try{const next=normalizeOfficeState(await api("/api/state",controller.signal));state=next;officeLive=state.source.state==="connected"&&state.source.stale!==true;state.agents=state.agents.map(agent=>({...agent,status:STATUS[agent.status]?agent.status:"unknown"}));received=true;if(!state.agents.some(agent=>agent.id===selected))selected=state.agents[0]?.id||null;motion?.update(state.agents,performance.now(),motionOptions());renderOverview();renderSource();syncProfiles();syncMotion();syncOfficeActivity();}
+    catch(error){officeLive=false;stopOfficeActivity();drawOffice();if(!(error.name==="AbortError"&&document.hidden)){$("connection-status").textContent=error.status===401?"Masuk diperlukan":"Koneksi terputus";$("connection-signal").className="status-dot disconnected";$("office-source-dot").className="status-dot unknown";$("office-message").textContent=received?"Koneksi terputus. Status terakhir tetap ditampilkan.":"Menunggu koneksi. Kantor siap menampilkan bot.";$("source-detail").textContent=error.message;}}
     finally{clearTimeout(timer);polling=false;pollController=null;schedulePoll();}
   }
   function openAudit(){const agent=state.agents.find(item=>item.id===selected);if(agent)chooseAuditProfile(agent.profile||agent.id);switchView("audit");}
@@ -330,7 +375,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { normaliz
   addEventListener("resize",drawOffice);
   $("motion-toggle").addEventListener("click",()=>{if(motionPaused||reduceOfficeMotion()){motionOverride=true;motionPaused=false;}else motionPaused=true;syncMotion();});
   reducedMotion.addEventListener("change",syncMotion);
-  document.addEventListener("visibilitychange",()=>{clearTimeout(pollTimer);syncMotion();if(document.hidden)pollController?.abort();else if(!polling)poll();});
+  document.addEventListener("visibilitychange",()=>{clearTimeout(pollTimer);syncMotion();if(document.hidden){pollController?.abort();stopOfficeActivity();}else if(!polling)poll();});
   const tick=()=>{const now=new Date();$("clock").textContent=now.toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit",hour12:false});$("clock").dateTime=now.toISOString();};tick();setInterval(tick,1000);
   switchView(location.hash==="#audit"?"audit":"overview",false);drawOffice();renderOverview();
   Promise.allSettled([imageFor("hermes-hq-office.png").then(image=>{background=image;}),...[0,1,2,3,4].map(async character=>{characters.set(character,await imageFor("char_"+character+".png"));})]
