@@ -18,6 +18,7 @@ import math
 import mimetypes
 import os
 from pathlib import Path
+import re
 import secrets
 import socket
 import tempfile
@@ -26,7 +27,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, unquote, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, unquote, urlsplit
 from urllib.request import HTTPCookieProcessor, HTTPRedirectHandler, Request, build_opener
 
 POLL_SECONDS = 10
@@ -36,7 +37,29 @@ MAX_REMOTE_BODY = 1_048_576
 MAX_PROFILES = 100
 MAX_SESSIONS = 100
 MAX_EVENTS = 100
+AUDIT_CACHE_SECONDS = 10
+MAX_AUDIT_CACHE = 16
+MAX_MESSAGE_TEXT = 16_000
+MAX_PAGE_TEXT = 128_000
+MAX_TOOL_ARGUMENTS = 4_000
+MAX_TOOL_CALLS = 20
 GET_PATHS = frozenset({"/api/profiles", "/api/profiles/sessions", "/api/status", "/api/auth/providers", "/api/auth/me"})
+
+
+def valid_session_id(value):
+    return isinstance(value, str) and value not in {".", "..", "stats", "search", "empty", "import", "export", "prune", "bulk-delete", "owner-backfill"} and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", value) is not None
+
+
+def valid_profile_id(value):
+    return isinstance(value, str) and value != "all" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", value) is not None
+
+
+def session_read_path(path):
+    match = re.fullmatch(r"/api/sessions/([^/]+)(/messages)?", path)
+    if not match:
+        return False
+    identifier = unquote(match[1])
+    return valid_session_id(identifier) and quote(identifier, safe="") == match[1]
 
 
 class SourceError(Exception):
@@ -84,6 +107,11 @@ class SameSourceRedirects(HTTPRedirectHandler):
         if request.get_method() != "GET" or origin(newurl) != origin(self.base):
             raise SourceError("Redirect Hermes ditolak.")
         prefix = urlsplit(self.base).path.rstrip("/")
+        original = urlsplit(request.full_url)
+        relative = original.path[len(prefix):]
+        query = parse_qs(original.query)
+        if session_read_path(relative) or relative == "/api/profiles/sessions" and query.get("profile") != ["all"]:
+            raise SourceError("Redirect riwayat Hermes ditolak.")
         if urlsplit(newurl).path not in {prefix + p for p in GET_PATHS}:
             raise SourceError("Sesi login Hermes perlu disambungkan ulang.", requires_login=True)
         return super().redirect_request(request, fp, code, msg, headers, newurl)
@@ -117,7 +145,8 @@ class HermesClient:
                 os.unlink(temporary)
 
     def _request(self, opener, method, path, query=None, payload=None):
-        if method == "GET" and path not in GET_PATHS:
+        scoped_session_read = session_read_path(path) and isinstance(query, dict) and valid_profile_id(query.get("profile"))
+        if method == "GET" and path not in GET_PATHS and not scoped_session_read:
             raise SourceError("Endpoint monitoring tidak diizinkan.")
         if method != "GET" and (method != "POST" or path != "/auth/password-login"):
             raise SourceError("Connector ini hanya membaca Hermes.")
@@ -218,6 +247,70 @@ def normalize_sessions(payload, profiles):
     return result, {name: count(totals.get(name)) for name in profiles}
 
 
+def chat_text(value):
+    """Display text only: no media URLs, binary attachments, or hidden reasoning."""
+    if isinstance(value, str):
+        return value, 0
+    if not isinstance(value, list):
+        return "", 0
+    parts, attachments = [], 0
+    for part in value[:100]:
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind in ("text", "input_text", "output_text") and isinstance(part.get("text"), str):
+            parts.append(part["text"])
+        elif kind in ("image", "image_url", "input_image", "file", "input_file", "audio", "input_audio"):
+            attachments += 1
+    return "\n".join(parts), attachments
+
+
+def normalize_messages(rows):
+    result, remaining = [], MAX_PAGE_TEXT
+    for row in rows[:100]:
+        if not isinstance(row, dict) or row.get("role") not in ("user", "assistant", "tool") or row.get("display_kind") == "hidden":
+            continue
+        truncated = False
+        def bounded(value, maximum):
+            nonlocal remaining, truncated
+            if not isinstance(value, str):
+                return ""
+            clean = "".join(c for c in value if c in "\n\r\t" or 32 <= ord(c) and ord(c) != 127)
+            output = clean[:min(maximum, remaining)]
+            remaining -= len(output)
+            truncated |= len(output) < len(clean)
+            return output
+        visible = row.get("display_content") if row.get("display_content") is not None else row.get("content")
+        content, attachments = chat_text(visible)
+        content = bounded(content, MAX_MESSAGE_TEXT)
+        calls = row.get("tool_calls")
+        if isinstance(calls, str):
+            try:
+                if len(calls) > MAX_MESSAGE_TEXT * 2:
+                    raise ValueError()
+                calls = json.loads(calls)
+            except ValueError:
+                calls, truncated = [], True
+        tools = []
+        if isinstance(calls, list):
+            truncated |= len(calls) > MAX_TOOL_CALLS
+            for call in calls[:MAX_TOOL_CALLS]:
+                if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+                    continue
+                function = call["function"]
+                arguments = function.get("arguments")
+                if isinstance(arguments, (dict, list)):
+                    arguments = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+                tools.append({"id": bounded(call.get("id"), 200), "name": bounded(function.get("name"), 120),
+                              "arguments": bounded(arguments, MAX_TOOL_ARGUMENTS)})
+        identifier = str(row["id"])[:200] if isinstance(row.get("id"), int) and not isinstance(row["id"], bool) else text(row.get("id"), 200)
+        result.append({"id": identifier, "role": row["role"], "content": content, "timestamp": timestamp(row.get("timestamp")),
+                       "tool_name": bounded(row.get("tool_name"), 120) or None,
+                       "tool_call_id": bounded(row.get("tool_call_id"), 200) or None,
+                       "tool_calls": tools, "attachment_count": attachments, "truncated": truncated})
+    return result
+
+
 def public_profiles(payload, previous):
     names = payload.get("profiles")
     if not isinstance(names, list) or not names or len(names) > MAX_PROFILES or not all(
@@ -295,6 +388,8 @@ class Monitor:
         self.closed = False
         self.generation = 0
         self.worker = None
+        self.audit_lock = threading.RLock()
+        self.audit_cache = {}
         self.profiles = {}
         self.profile_error = None
         self.profile_gateways = {}
@@ -485,8 +580,94 @@ class Monitor:
             with self.lock:
                 self.refreshing = False
 
+    def _audit(self, kind, profile, session_id, limit, offset, order, loader):
+        if not valid_profile_id(profile) or type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset <= 1_000_000:
+            raise ValueError("Invalid audit query")
+        if kind == "messages" and (not valid_session_id(session_id) or order not in ("oldest", "latest")):
+            raise ValueError("Invalid audit query")
+        with self.lock:
+            if profile not in self.profiles:
+                raise KeyError("Unknown profile")
+        base = {"profile": profile, "available": False, "requires_login": False, "error": None, "stale": True, "read_only": True,
+                kind: [], "pagination": {"limit": limit, "offset": offset, "returned": 0, "has_more": False}}
+        if kind == "messages":
+            base.update(requested_session_id=session_id, session_id=session_id, session=None)
+            base["pagination"]["order"] = order
+        else:
+            base["pagination"]["total"] = None
+        key = (kind, profile, session_id, limit, offset, order)
+        with self.audit_lock:
+            now = self.clock()
+            # A cached page must never outlive the source authentication context.
+            if not self.client.has_session():
+                self.audit_cache.clear()
+                return {**base, "requires_login": True, "error": "Hubungkan login Hermes untuk membaca riwayat chat.", "checked_at": now, "cached": False}
+            cached = self.audit_cache.get(key)
+            if cached and now - cached[0] < AUDIT_CACHE_SECONDS:
+                return {**copy.deepcopy(cached[1]), "cached": True}
+            try:
+                result = {**base, **loader(), "available": True, "stale": False, "checked_at": now, "cached": False}
+            except SourceError as error:
+                if error.requires_login:
+                    self.audit_cache.clear()
+                    with self.lock:
+                        self.state["source"]["private_detail_requires_login"] = True
+                result = {**base, "requires_login": error.requires_login, "checked_at": now, "cached": False,
+                          "error": "Hubungkan ulang login Hermes untuk membaca riwayat chat." if error.requires_login else "Riwayat Hermes belum dapat dibaca. Periksa koneksi atau pilih sesi lain."}
+            except Exception:
+                result = {**base, "checked_at": now, "cached": False, "error": "Riwayat Hermes belum dapat dibaca."}
+            self.audit_cache[key] = (now, copy.deepcopy(result))
+            while len(self.audit_cache) > MAX_AUDIT_CACHE:
+                del self.audit_cache[next(iter(self.audit_cache))]
+            return result
+
+    def audit_sessions(self, profile, limit=50, offset=0):
+        def load():
+            payload = self.client.get("/api/profiles/sessions", {"profile": profile, "limit": limit, "offset": offset, "order": "recent"})
+            rows = payload.get("sessions")
+            if payload.get("errors") or not isinstance(rows, list) or len(rows) > limit or any(
+                not isinstance(row, dict) or row.get("profile") != profile for row in rows):
+                raise SourceError()
+            if payload.get("limit", limit) != limit or payload.get("offset", offset) != offset:
+                raise SourceError()
+            sessions, _ = normalize_sessions(payload, {profile: {}})
+            total = payload.get("total")
+            total = count(total) if type(total) is int and total >= 0 else None
+            returned = len(rows)
+            return {"sessions": sessions, "pagination": {"limit": limit, "offset": offset, "returned": returned, "total": total,
+                                                         "has_more": offset + returned < total if total is not None else returned == limit}}
+        return self._audit("sessions", profile, None, limit, offset, None, load)
+
+    def audit_messages(self, profile, session_id, limit=50, offset=0, order="latest"):
+        def detail(identifier):
+            row = self.client.get("/api/sessions/" + quote(identifier, safe=""), {"profile": profile})
+            if row.get("profile") != profile or row.get("id") != identifier:
+                raise SourceError()
+            sessions, _ = normalize_sessions({"sessions": [row]}, {profile: {}})
+            if not sessions:
+                raise SourceError()
+            return sessions[0]
+        def load():
+            session = detail(session_id)
+            payload = self.client.get("/api/sessions/" + quote(session_id, safe="") + "/messages",
+                                      {"profile": profile, "limit": limit, "offset": offset, "order": order, "include_compacted": "false"})
+            resolved = payload.get("session_id")
+            rows, pagination = payload.get("messages"), payload.get("pagination")
+            # v0.21.1 omits messages.profile; the scoped detail proves ownership.
+            if "profile" in payload and payload["profile"] != profile or not valid_session_id(resolved) or not isinstance(rows, list) or len(rows) > limit:
+                raise SourceError()
+            if not isinstance(pagination, dict) or pagination.get("limit") != limit or pagination.get("offset") != offset or pagination.get("order") != order or pagination.get("returned") != len(rows):
+                raise SourceError()
+            if resolved != session_id:
+                session = detail(resolved)
+            return {"session_id": resolved, "session": session, "messages": normalize_messages(rows),
+                    "pagination": {"limit": limit, "offset": offset, "order": order, "returned": len(rows), "has_more": len(rows) == limit}}
+        return self._audit("messages", profile, session_id, limit, offset, order, load)
+
     def connect(self, username, password):
-        self.client.login(username, password)
+        with self.audit_lock:
+            self.client.login(username, password)
+            self.audit_cache.clear()
         with self.lock:
             self.generation += 1
             self.last_attempt = self.last_profiles_attempt = 0
@@ -569,6 +750,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, self.server.monitor.snapshot())
         if path == "/api/connect-options":
             return self._send(200, {"csrf_token": self.server.csrf_token, "source_url": self.server.monitor.client.base})
+        if path in ("/api/audit/sessions", "/api/audit/messages"):
+            if self.headers.get("Origin") and self.headers["Origin"] != self._origin() or self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return self._send(403, {"error": "Riwayat chat hanya dapat dibuka dari halaman monitor."})
+            try:
+                if len(urlsplit(self.path).query) > 1_500:
+                    raise ValueError()
+                parameters = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=6)
+                allowed = {"profile", "limit", "offset"} if path.endswith("/sessions") else {"profile", "session_id", "limit", "offset", "order"}
+                if set(parameters) - allowed or any(len(values) != 1 for values in parameters.values()):
+                    raise ValueError()
+                values = {key: value[0] for key, value in parameters.items()}
+                if not re.fullmatch(r"[0-9]{1,3}", values.get("limit", "50")) or not re.fullmatch(r"[0-9]{1,7}", values.get("offset", "0")):
+                    raise ValueError()
+                profile, limit, offset = values.get("profile", ""), int(values.get("limit", "50")), int(values.get("offset", "0"))
+                if path.endswith("/sessions"):
+                    result = self.server.monitor.audit_sessions(profile, limit, offset)
+                else:
+                    result = self.server.monitor.audit_messages(profile, values.get("session_id", ""), limit, offset, values.get("order", "latest"))
+            except ValueError:
+                return self._send(400, {"error": "Query riwayat chat tidak valid."})
+            except KeyError:
+                return self._send(404, {"error": "Bot tidak ditemukan pada dashboard Hermes."})
+            except Exception:
+                return self._send(502, {"error": "Riwayat Hermes belum dapat dibaca."})
+            return self._send(200, result)
         if path.startswith("/api/"):
             return self._send(404, {"error": "Endpoint tidak ditemukan."})
         path = unquote(path)

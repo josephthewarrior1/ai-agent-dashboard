@@ -17,8 +17,13 @@ collection from written prompts and the user's requested visual direction.
 They are copied from assets/generated without alteration. Their prompt and
 generation records remain in that asset collection.
 
-Floor, walls, windows, room signs, desk surfaces, and monitor lighting in this
-frontend are independently drawn in canvas. Character presence represents
+hermes-hq-office.png is new office background artwork generated with the
+built-in image generation tool on 2026-10-05, using the user's supplied
+reference. Its generation prompt is retained in office-room.prompt.md.
+The background contains furniture only. Labels and status are live UI
+components rather than text baked into the artwork.
+
+Character presence represents
 the real Hermes bot profiles returned by the monitoring server. A stable
 sorted profile ID assigns one of the five visual character sheets, with
 distinct characters for the first five profiles. All bot workstations share

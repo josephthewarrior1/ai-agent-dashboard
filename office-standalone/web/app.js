@@ -55,160 +55,285 @@ function normalizeOfficeState(payload) {
 }
 
 function sharedOfficeLayout(agents) {
-  const sorted = agents.slice().sort((a, b) => String(a.id).localeCompare(String(b.id), "en"));
-  const positions = [[174, 128], [322, 128], [470, 128], [245, 275], [407, 275]];
-  return sorted.map((agent, index) => {
-    const [x, y] = positions[index] || [174 + ((index - 5) % 3) * 148, 422 + Math.floor((index - 5) / 3) * 147];
-    return { id: agent.id, character: index % 5, x, y };
-  });
+  const positions = [[.322,.45,.54],[.498,.45,.54],[.677,.45,.54],[.395,.78,.875],[.603,.78,.875]];
+  return agents.slice().sort((a,b)=>String(a.id).localeCompare(String(b.id),"en")).slice(0,5).map((agent,index)=>({
+    id:agent.id, character:index, x:positions[index][0]*1942, y:positions[index][1]*810,
+    nameY:positions[index][2]*810, normalizedX:positions[index][0], normalizedY:positions[index][1], normalizedNameY:positions[index][2]
+  }));
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { normalizeOfficeState, officeTimestamp, sharedOfficeLayout };
+function normalizeAuditPayload(payload) {
+  const raw=payload&&typeof payload==="object"?payload:{};
+  const text=value=>typeof value==="string"?value:"";
+  const count=value=>typeof value==="number"&&Number.isFinite(value)&&value>=0?Math.floor(value):null;
+  const rows=value=>Array.isArray(value)?value.filter(row=>row&&typeof row==="object"):[];
+  const page=raw.pagination&&typeof raw.pagination==="object"?raw.pagination:{};
+  return {
+    available:raw.available===true, requires_login:raw.requires_login===true, error:text(raw.error), profile:text(raw.profile),
+    requested_session_id:text(raw.requested_session_id),session_id:text(raw.session_id),session:raw.session||null,
+    pagination:{limit:count(page.limit)||50,offset:count(page.offset)||0,returned:count(page.returned)||0,total:count(page.total),has_more:page.has_more===true,order:text(page.order)},
+    sessions:rows(raw.sessions).filter(row=>text(row.id)).map(row=>({...row,last_active:officeTimestamp(row.last_active),started_at:officeTimestamp(row.started_at),ended_at:officeTimestamp(row.ended_at),message_count:count(row.message_count),tool_call_count:count(row.tool_call_count)})),
+    messages:rows(raw.messages).map(row=>({
+      id:text(row.id),role:text(row.role)||"unknown",content:text(row.content),timestamp:officeTimestamp(row.timestamp),
+      tool_name:text(row.tool_name),tool_call_id:text(row.tool_call_id),truncated:row.truncated===true,attachment_count:count(row.attachment_count)||0,
+      tool_calls:rows(row.tool_calls).map(call=>({id:text(call.id),name:text(call.name),arguments:call.arguments}))
+    }))
+  };
+}
+
+function auditChannel(source) {
+  const value=typeof source==="string"?source.trim().toLowerCase().replace(/[ -]/g,"_"):"";
+  return value==="api"||value==="api_server"?"api":value;
+}
+
+function preferredConversation(sessions,channel="all") {
+  const matches=sessions.filter(session=>channel==="all"||auditChannel(session.source)===channel);
+  return matches.find(session=>["telegram","whatsapp"].includes(auditChannel(session.source)))||matches[0]||null;
+}
+
+if (typeof module !== "undefined" && module.exports) module.exports = { normalizeOfficeState, officeTimestamp, sharedOfficeLayout, normalizeAuditPayload, auditChannel, preferredConversation };
+
 
 (() => {
   "use strict";
-  if (typeof document === "undefined") return;
-  const $ = id => document.getElementById(id);
-  const create = (tag, className, value) => { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = value; return node; };
-  const STATUSES = { idle: "Idle", working: "Bekerja", waiting: "Perlu input", error: "Gagal", offline: "Offline", unknown: "Belum pasti" };
-  const SOURCE_LABELS = { connected: "Hermes terhubung", connecting: "Menyambungkan Hermes…", needs_login: "Hermes perlu dihubungkan", stale: "Data Hermes belum diperbarui", error: "Koneksi Hermes bermasalah" };
-  let state = { agents: [], sessions: [], events: [], source: { state: "connecting" }, gateway: null };
-  let received = false;
-  let selected = null;
-  let filter = "all";
-  let query = "";
-  let polling = false;
-  let pollTimer = null;
-  let pollController = null;
-  let lastInspectorSignature = "";
-  const teamNodes = new Map();
-  const deskNodes = new Map();
-  const images = new Map();
-  const sprites = new Map();
-  const safeString = value => value == null ? "" : String(value);
-  const displayTime = value => { const timestamp = officeTimestamp(value); if (!timestamp) return ""; return new Date(timestamp).toLocaleString("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); };
-  const safeLink = (node, value) => {
-    try { const url = new URL(value); if (!["http:", "https:"].includes(url.protocol)) throw new Error(); node.href = url.href; node.hidden = false; }
-    catch { node.hidden = true; node.removeAttribute("href"); }
-  };
-  const characterFor = id => sharedOfficeLayout(state.agents).find(agent => agent.id === id)?.character || 0;
-  const normalizeAgent = agent => ({ ...agent, id: safeString(agent.id), label: safeString(agent.label || agent.id), status: STATUSES[agent.status] ? agent.status : "unknown", platforms: Array.isArray(agent.platforms) ? agent.platforms.map(safeString) : agent.platform ? [safeString(agent.platform)] : [], character: characterFor(agent.id) });
-  const visibleAgents = () => state.agents.filter(agent => (filter === "all" || agent.status === filter) && `${agent.label} ${agent.id} ${agent.platforms.join(" ")} ${agent.detail || ""} ${STATUSES[agent.status]}`.toLocaleLowerCase("id-ID").includes(query));
-  const loadImage = path => {
-    if (!images.has(path)) images.set(path, new Promise((resolve, reject) => { const img = new Image(); img.onload = () => resolve(img); img.onerror = reject; img.src = `/assets/${path}`; }));
-    return images.get(path);
-  };
-  const ASSETS = [
-    ["sofa", "studio-atlas.png", [62,157,536,360], [40,28]], ["server", "studio-atlas.png", [792,81,299,468], [20,32]],
-    ["shelf", "studio-atlas.png", [79,699,494,453], [34,28]], ["plant", "studio-atlas.png", [680,656,501,512], [26,32]],
-    ["coffee", "utilities-atlas.png", [184,85,374,517], [20,26]], ["cooler", "utilities-atlas.png", [863,98,155,504], [12,26]],
-    ["lamp", "utilities-atlas.png", [279,680,179,491], [12,30]], ["clock", "utilities-atlas.png", [829,868,221,227], [10,10]],
-    ["succulent", "decor-atlas.png", [188,766,267,360], [12,16]], ["planter", "decor-atlas.png", [658,800,550,313], [32,18]],
-    ["conference", "meeting-atlas.png", [44,216,560,304], [80,44]], ["board", "meeting-atlas.png", [686,195,510,290], [48,28]],
-    ["chair", "meeting-atlas.png", [185,712,278,407], [15,22]], ["easel", "specialty-atlas.png", [181,72,264,506], [26,42]],
-    ["globe", "specialty-atlas.png", [158,692,303,469], [22,30]]
-  ];
-  const rect = (ctx,x,y,w,h,color) => { ctx.fillStyle = color; ctx.fillRect(x,y,w,h); };
-  const prop = (ctx,id,x,y,scale=1) => { const sprite = sprites.get(id); if (sprite) ctx.drawImage(sprite,x,y,Math.round(sprite.width*scale),Math.round(sprite.height*scale)); };
-  const avatar = (canvas,character) => { const ctx=canvas.getContext("2d"); ctx.clearRect(0,0,16,32); ctx.imageSmoothingEnabled=false; prop(ctx,`char-${character}-idle`,0,0); };
-  const officeText = (ctx,label,x,y,color="#8fa4b8") => {ctx.font="7px monospace";ctx.textAlign="left";ctx.fillStyle=color;ctx.fillText(label,x,y);};
-  const drawWorkstation = (ctx,agent,position) => {
-    const {x,y}=position; const accent=["#83b7cd","#c5ac82","#ae9dcc","#9fba9c","#b3c0c5"][position.character];
-    rect(ctx,x-48,y+18,98,9,"#19283d");rect(ctx,x-43,y+17,5,30,"#142137");rect(ctx,x+37,y+17,5,30,"#142137");
-    rect(ctx,x-48,y-5,96,26,"#5e5148");rect(ctx,x-48,y-8,96,25,"#92785f");rect(ctx,x-47,y-7,94,3,"#b09b7d");rect(ctx,x-47,y+14,94,4,"#6f5949");
-    rect(ctx,x-19,y-39,38,29,"#142034");rect(ctx,x-16,y-36,32,21,agent?.status==="working"?"#608181":"#3d5774");rect(ctx,x-15,y-35,30,2,accent);rect(ctx,x-13,y-28,20,2,"#7b95a7");rect(ctx,x-13,y-22,12,2,"#637f98");rect(ctx,x-2,y-10,4,5,"#15243a");rect(ctx,x-9,y-6,18,2,"#26364a");
-    rect(ctx,x-17,y+3,29,7,"#36475a");rect(ctx,x-15,y+4,25,2,"#8c9baa");rect(ctx,x+19,y+2,8,8,"#b9c4c4");rect(ctx,x+26,y+4,3,4,"#70849a");
-    prop(ctx,"succulent",x-42,y-19,1.1);
-    rect(ctx,x-13,y+50,26,7,"#15253b");rect(ctx,x-15,y+39,30,17,"#23374b");rect(ctx,x-13,y+40,26,12,accent);rect(ctx,x-11,y+43,22,8,"#3c5368");
-    if(agent)prop(ctx,`char-${position.character}-${agent.status==="working"?"work":"idle"}`,x-16,y+7,2);
-    if(agent?.id===selected){const left=x-54,top=y-44;for(const [cx,cy,sx,sy]of [[left,top,1,1],[left+105,top,-1,1],[left,top+113,1,-1],[left+105,top+113,-1,-1]]){rect(ctx,cx,cy,8*sx,2*sy,"#a9cdb9");rect(ctx,cx,cy,2*sx,8*sy,"#a9cdb9");}}
-  };
-  const drawOffice = () => {
-    const canvas=$("office-scene"),layout=sharedOfficeLayout(state.agents),height=Math.max(410,...layout.map(position=>position.y+117));if(canvas.height!==height)canvas.height=height;const ctx=canvas.getContext("2d");ctx.imageSmoothingEnabled=false;
-    rect(ctx,0,0,640,height,"#111e33");rect(ctx,5,5,630,height-10,"#293d53");
-    for(let y=68;y<height-7;y+=15){rect(ctx,8,y,624,14,y%2?"#293d53":"#273a50");for(let x=(Math.round(y/15)%2)*34+12;x<631;x+=68)rect(ctx,x,y,1,14,"#30445b");}
-    rect(ctx,6,6,628,58,"#34475d");rect(ctx,6,62,628,5,"#182a40");rect(ctx,7,height-8,626,2,"#587086");
-    for(const x of[37,265,468]){rect(ctx,x,16,78,35,"#162a41");rect(ctx,x+3,19,72,28,"#526d83");rect(ctx,x+4,20,70,12,"#879fb1");rect(ctx,x+37,19,3,28,"#2d475e");rect(ctx,x+3,33,72,3,"#2d475e");rect(ctx,x-3,49,84,5,"#8c9ba5");}
-    rect(ctx,156,17,78,28,"#12233a");rect(ctx,157,18,76,26,"#415670");officeText(ctx,"HERMES HQ",167,30,"#e2d4b4");officeText(ctx,"CONTROL ROOM",162,39,"#a2b5c7");prop(ctx,"clock",596,21,1.8);
-    rect(ctx,19,100,91,70,"#21344a");rect(ctx,20,101,89,68,"#314b58");prop(ctx,"sofa",25,103,1.8);prop(ctx,"shelf",26,69,1.5);prop(ctx,"plant",87,123,1.4);officeText(ctx,"LOUNGE",28,186);
-    prop(ctx,"server",567,78,1.7);prop(ctx,"server",605,78,1.25);prop(ctx,"cooler",608,152,1.6);officeText(ctx,"SERVER",570,145);
-    prop(ctx,"board",29,221,1.7);prop(ctx,"chair",15,298,1.3);prop(ctx,"chair",143,298,1.3);prop(ctx,"chair",54,329,1.3);prop(ctx,"chair",101,329,1.3);prop(ctx,"conference",35,280,1.35);officeText(ctx,"MEETING",64,371);
-    prop(ctx,"coffee",565,267,1.8);prop(ctx,"plant",588,310,1.5);prop(ctx,"planter",499,height-35,1.5);prop(ctx,"lamp",116,218,1.7);
-    const positions=layout.length?layout:sharedOfficeLayout([0,1,2,3,4].map(index=>({id:String(index)})));positions.forEach(position=>drawWorkstation(ctx,state.agents.find(agent=>agent.id===position.id),position));
-    layout.forEach(position=>{const desk=deskNodes.get(position.id);if(!desk)return;desk.button.style.left=`${position.x/640*100}%`;desk.button.style.top=`${(position.y-44)/height*100}%`;desk.button.style.width=`${110/640*100}%`;desk.button.style.height=`${120/height*100}%`;});
-  };
-  const choose = id => { selected=id; renderRoster(); renderInspector(); };
-  const newBotNodes = agent => {
-    const button=create("button","team-member");button.type="button";
-    const image=create("canvas","team-avatar");image.width=16;image.height=32;image.setAttribute("aria-hidden","true");
-    const info=create("span","team-info"),name=create("span","team-name"),platform=create("span","team-platform"),status=create("span","team-status"),dot=create("i","status-dot"),statusLabel=create("span");dot.setAttribute("aria-hidden","true");status.append(dot,statusLabel);info.append(name,platform,status);button.append(image,info);button.addEventListener("click",()=>choose(agent.id));teamNodes.set(agent.id,{button,image,name,platform,dot,statusLabel});
-    const deskButton=create("button","desk-target");deskButton.type="button";const nameplate=create("span","desk-nameplate"),deskName=create("span","desk-name"),deskStatus=create("span","desk-status"),deskDot=create("i","status-dot");deskDot.setAttribute("aria-hidden","true");const deskStatusText=create("span");deskStatus.append(deskDot,deskStatusText);nameplate.append(deskName,deskStatus);deskButton.append(nameplate);deskButton.addEventListener("click",()=>choose(agent.id));deskNodes.set(agent.id,{button:deskButton,name:deskName,status:deskStatusText,dot:deskDot});
-  };
-  const renderRoster = () => {
-    const list=visibleAgents();const ids=new Set(state.agents.map(agent=>agent.id));
-    for(const [id,nodes] of teamNodes) if(!ids.has(id)){nodes.button.remove();deskNodes.get(id)?.button.remove();teamNodes.delete(id);deskNodes.delete(id);}
-    $("team-list").querySelectorAll(".list-message").forEach(node=>node.remove());
-    state.agents.forEach(agent=>{
-      if(!teamNodes.has(agent.id))newBotNodes(agent);const team=teamNodes.get(agent.id),desk=deskNodes.get(agent.id),show=list.some(item=>item.id===agent.id);team.button.hidden=!show;desk.button.classList.toggle("is-muted",!show);
-      team.name.textContent=agent.label;team.platform.textContent=agent.platforms.join(" · ")||"Hermes";team.dot.className=`status-dot ${agent.status}`;team.statusLabel.textContent=STATUSES[agent.status];team.button.setAttribute("aria-pressed",String(selected===agent.id));team.button.title=safeString(agent.detail||agent.label);avatar(team.image,agent.character);
-      desk.name.textContent=agent.label;desk.status.textContent=STATUSES[agent.status];desk.dot.className=`status-dot ${agent.status}`;desk.button.setAttribute("aria-pressed",String(selected===agent.id));desk.button.setAttribute("aria-label",`Pilih meja ${agent.label}, ${STATUSES[agent.status]}`);desk.button.title=`${agent.label} · ${STATUSES[agent.status]}`;
-      if(team.button.parentElement!==$("team-list"))$("team-list").append(team.button);if(desk.button.parentElement!==$("desk-targets"))$("desk-targets").append(desk.button);
+  if(typeof document==="undefined")return;
+  const $=id=>document.getElementById(id);
+  const node=(tag,className,text)=>{const el=document.createElement(tag);if(className)el.className=className;if(text!==undefined)el.textContent=text;return el;};
+  const STATUS={idle:"Idle",working:"Bekerja",waiting:"Perlu input",error:"Gagal",offline:"Offline",unknown:"Belum pasti"};
+  const SOURCE={connected:"Hermes terhubung",connecting:"Menghubungkan Hermes",needs_login:"Perlu koneksi Hermes",stale:"Data belum diperbarui",error:"Koneksi bermasalah"};
+  const ROLE={user:"Pengguna",assistant:"Bot",tool:"Tool",system:"Sistem"};
+  let state={agents:[],sessions:[],events:[],source:{state:"connecting"},gateway:null};
+  let selected=null,received=false,view=null,polling=false,pollTimer=null,pollController=null;
+  const roster=new Map(),desks=new Map(),avatars=new Map(),images=new Map(),characters=new Map();
+  let background=null;
+  const reducedMotion=matchMedia("(prefers-reduced-motion: reduce)");
+  const motion=window.HermesOfficeMotion?.create()||null;
+  let motionPaused=false,motionOverride=false,animationFrame=null,lastDrawTime=0;
+  const reduceOfficeMotion=()=>reducedMotion.matches&&!motionOverride;
+  const motionOptions=()=>({reducedMotion:reduceOfficeMotion(),paused:motionPaused||document.hidden||view!=="overview"});
+  const audit={profile:"",channel:"all",sessions:[],sessionId:"",session:null,messages:[],available:null,requiresLogin:false,error:"",loadingSessions:false,loadingMessages:false,sessionQuery:"",messageQuery:"",sessionOffset:0,messageOffset:0,hasMoreSessions:false,hasMoreMessages:false,sessionController:null,messageController:null,epoch:0,messageEpoch:0};
+  const text=value=>typeof value==="string"?value:"";
+  const time=value=>{const stamp=officeTimestamp(value);return stamp?new Date(stamp).toLocaleString("id-ID",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}):"";};
+  const labelFor=profile=>state.agents.find(agent=>(agent.profile||agent.id)===profile)?.label||profile;
+  const initials=label=>String(label||"").trim().slice(0,1).toUpperCase();
+  const setLink=(el,value)=>{try{const url=new URL(value);if(!["https:","http:"].includes(url.protocol))throw Error();el.href=url.href;el.hidden=false;}catch{el.hidden=true;el.removeAttribute("href");}};
+  const serialize=value=>typeof value==="string"?value:JSON.stringify(value,null,2)||"";
+  const imageFor=path=>{if(!images.has(path))images.set(path,new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(image);image.onerror=reject;image.src="/assets/"+path;}));return images.get(path);};
+  const api=async(path,signal)=>{const response=await fetch(path,{cache:"no-store",credentials:"same-origin",signal});let value={};try{value=await response.json();}catch{}if(!response.ok){const error=new Error(response.status===401?"Masuk ke control room untuk membuka data.":text(value.error)||"Data belum dapat dimuat. Coba kembali.");error.status=response.status;throw error;}return value;};
+
+  function drawOffice(){
+    const canvas=$("office-scene"),width=background?.naturalWidth||1942,height=background?.naturalHeight||810;
+    if(canvas.width!==width)canvas.width=width;if(canvas.height!==height)canvas.height=height;
+    const ctx=canvas.getContext("2d");ctx.imageSmoothingEnabled=false;
+    if(background)ctx.drawImage(background,0,0,width,height);else{ctx.fillStyle="#17263f";ctx.fillRect(0,0,width,height);}
+    const entities=motion?.getEntities()||sharedOfficeLayout(state.agents).map(position=>({...position,x:position.x,y:position.y+12,row:0,frame:state.agents.find(agent=>agent.id===position.id)?.status==="working"?3:0,mirror:false,location:"desk",moving:false}));
+    entities.slice().sort((a,b)=>a.y-b.y).forEach(entity=>{
+      const image=characters.get(entity.character),x=entity.x/1942*width,y=entity.y/810*height;
+      if(image){ctx.save();ctx.translate(Math.round(x),Math.round(y));if(entity.mirror)ctx.scale(-1,1);ctx.drawImage(image,entity.frame*16,entity.row*32,16,32,-20,-80,40,80);ctx.restore();}
+      const avatar=avatars.get(entity.id),agent=state.agents.find(item=>item.id===entity.id);
+      if(avatar&&agent){avatar.style.left=(entity.x/1942*100)+"%";avatar.style.top=(entity.y/810*100)+"%";avatar.dataset.location=entity.location||"desk";avatar.dataset.moving=String(entity.moving===true);avatar.title=agent.label;avatar.setAttribute("aria-label","Buka chat "+agent.label);avatar.setAttribute("aria-pressed",String(selected===agent.id));}
     });
-    $("session-count").textContent=received?`${state.agents.length} BOT`:"—";
-    for(const status of ["all","working","idle","unknown","offline"]){$("count-"+status).textContent=received?state.agents.filter(agent=>status==="all"||agent.status===status).length:"—";}
-    if(!list.length){
-      let title="Menyambungkan Hermes…";
-      if(received&&state.agents.length)title="Tidak ada bot yang cocok. Coba filter Semua.";
-      else if(received&&state.source.state==="needs_login")title="Hubungkan Hermes untuk melihat bot.";
-      else if(received&&state.source.state==="connected")title="Belum ada bot terdeteksi.";
-      else if(received&&["stale","error"].includes(state.source.state))title="Menunggu data bot dari Hermes.";
-      $("team-list").append(create("p","list-message",title));
-    }
-    document.querySelectorAll("[data-filter]").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.filter===filter)));
-    $("office-occupancy").textContent=received?`${state.agents.length} BOT · KANTOR BERSAMA`:"MENUNGGU BOT";drawOffice();
-  };
-  const emptyLog = (target,title,detail) => {const box=create("div","empty-log"),symbol=create("span","","▤");symbol.setAttribute("aria-hidden","true");box.append(symbol,create("p","",title),create("small","",detail));target.replaceChildren(box);};
-  const renderInspector = () => {
-    const agent=state.agents.find(item=>item.id===selected);$("selected-agent").hidden=!agent;$("session-details").hidden=!agent;
-    const sessions=agent?state.sessions.filter(session=>safeString(session.agent_id)===agent.id).sort((a,b)=>(Date.parse(b.last_active)||0)-(Date.parse(a.last_active)||0)):[];
-    const events=agent?state.events.filter(event=>safeString(event.agent_id)===agent.id).sort((a,b)=>(Date.parse(b.timestamp)||0)-(Date.parse(a.timestamp)||0)):[];
-    const detailElsewhere=state.source.sessions_available===false||state.source.mode==="status_only"||agent?.private_detail_requires_login===true;
-    const signature=JSON.stringify([agent,sessions,events,detailElsewhere,state.source.url]);if(signature===lastInspectorSignature)return;lastInspectorSignature=signature;
-    $("sessions-log").replaceChildren();$("selected-session-count").textContent=agent?(detailElsewhere?"DI HERMES":`${sessions.length} SESI`):"—";$("event-count").textContent=agent?(detailElsewhere&&!events.length?"DI HERMES":`${events.length} CATATAN`):"—";
-    if(!agent){emptyLog($("activity-log"),"Pilih bot untuk melihat aktivitas.","Aktivitas muncul dari Hermes yang terhubung.");return;}
-    $("selected-name").textContent=agent.label;$("selected-platform").textContent=agent.platforms.join(" · ")||"Hermes";$("selected-status").textContent=STATUSES[agent.status];avatar($("selected-avatar"),agent.character);
-    $("selected-detail").textContent=safeString(agent.detail||"Belum ada detail aktivitas untuk bot ini.");$("selected-updated").textContent=agent.updated_at?`Diperbarui ${displayTime(agent.updated_at)}`:"";$("session-link").textContent=detailElsewhere?"Buka Hermes ↗":"Buka sesi asli ↗";safeLink($("session-link"),agent.url||agent.session_url||agent.chat_url||(detailElsewhere?state.source.url:null));
-    if(!sessions.length)$("sessions-log").append(create("p","sessions-empty",detailElsewhere?"Detail sesi ada di dashboard Hermes.":"Belum ada sesi tercatat untuk bot ini."));
-    sessions.slice(0,12).forEach(session=>{const item=create("div","session-record");item.append(create("p","",safeString(session.title||session.id)));const notes=[safeString(session.source),displayTime(session.last_active)];if(Number.isFinite(session.message_count))notes.push(`${session.message_count} pesan`);if(Number.isFinite(session.tool_call_count))notes.push(`${session.tool_call_count} panggilan tool`);item.append(create("small","",notes.filter(Boolean).join(" · ")));$("sessions-log").append(item);});
-    const expanded=new Set(Array.from($("activity-log").querySelectorAll("details[open]")).map(node=>node.dataset.eventId));$("activity-log").replaceChildren();
-    if(!events.length){emptyLog($("activity-log"),detailElsewhere?"Detail aktivitas ada di Hermes.":"Belum ada aktivitas tercatat.",detailElsewhere?"Status bot tetap dipantau di kantor ini. Buka Hermes untuk melihat detail sesi.":"Catatan akan muncul saat tersedia dari Hermes.");return;}
-    events.slice(0,40).forEach((event,index)=>{const record=create("details","event-record");record.dataset.eventId=safeString(event.id);record.open=expanded.has(safeString(event.id))||(expanded.size===0&&index===0);const summary=create("summary"),meta=create("span","event-meta");meta.append(create("span","event-kind",safeString(event.label||event.status||"Aktivitas")),create("time","",displayTime(event.timestamp)));summary.append(meta,create("p","event-detail",safeString(event.detail||"")));record.append(summary);$("activity-log").append(record);});
-  };
-  const renderSource = () => {
-    const source=state.source||{state:"connecting"};$("connection-status").textContent=SOURCE_LABELS[source.state]||"Status sumber belum tersedia";$("connection-signal").className=`signal ${source.state==="connected"?"connected":["needs_login","stale","error"].includes(source.state)?"disconnected":""}`;
-    $("source-status").textContent=source.label||SOURCE_LABELS[source.state]||"Sumber Hermes";$("source-detail").textContent=source.message||(source.state==="connected"?"Bot dan aktivitas berasal dari Hermes yang terhubung.":"Menunggu data dari sumber Hermes.");safeLink($("source-link"),source.url);$("connect-link").textContent=source.mode==="status_only"?"Hubungkan detail sesi ↗":"Hubungkan Hermes ↗";$("connect-link").hidden=source.state!=="needs_login"&&source.mode!=="status_only";
-    $("gateway-detail").hidden=!state.gateway;if(state.gateway){const gateway=state.gateway;const parts=[gateway.running===true?"Gateway aktif":gateway.running===false?"Gateway tidak aktif":"Gateway belum terverifikasi"];if(Number.isFinite(gateway.active_agents)&&gateway.scope==="all_profiles")parts.push(`${gateway.active_agents} pekerjaan aktif`);else if(Number.isFinite(gateway.active_agents)&&gateway.scope==="default")parts.push(`${gateway.active_agents} pekerjaan gateway utama`);if(Number.isFinite(gateway.active_sessions)&&gateway.scope==="all_profiles")parts.push(`${gateway.active_sessions} sesi aktif`);else if(Number.isFinite(gateway.active_sessions)&&gateway.scope==="default")parts.push(`${gateway.active_sessions} sesi gateway utama`);$("gateway-detail").textContent=parts.join(" · ");}
-    const stamp=source.last_success_at||state.updated_at;$("last-update").textContent=stamp?`Data Hermes ${displayTime(stamp)}`:"Belum menerima data Hermes";$("office-message").textContent=source.state==="connected"?"Status bot mengikuti Hermes. Pilih meja untuk melihat detail.":SOURCE_LABELS[source.state]||"Menunggu data Hermes.";$("office-source-dot").className=`status-dot ${source.state==="connected"?"working":source.state==="needs_login"?"waiting":"unknown"}`;
-  };
-  const schedulePoll = () => {clearTimeout(pollTimer);if(!document.hidden)pollTimer=setTimeout(poll,5000);};
-  const poll = async () => {
-    if(polling||document.hidden)return;clearTimeout(pollTimer);polling=true;const controller=new AbortController();pollController=controller;const requestTimer=setTimeout(()=>controller.abort(),15000);
-    try {
-      const response=await fetch("/api/state",{cache:"no-store",credentials:"same-origin",signal:controller.signal});if(!response.ok){const error=new Error(`HTTP ${response.status}`);error.status=response.status;throw error;}const next=await response.json();
-      state=normalizeOfficeState(next);state.agents=state.agents.map(normalizeAgent);received=true;
-      if(!state.agents.some(agent=>agent.id===selected))selected=state.agents[0]?.id||null;renderSource();renderRoster();renderInspector();
-    } catch(error){
-      if(!(error.name==="AbortError"&&document.hidden)){$("connection-signal").className="signal disconnected";$("connection-status").textContent=error.status===401?"Login control room dibutuhkan":"Koneksi control room terputus";$("source-detail").textContent=error.status===401?"Buka ulang halaman lalu masuk ke control room.":"Koneksi ke control room terputus. Mencoba lagi dalam beberapa detik.";$("office-message").textContent=received?"Koneksi terputus. Status terakhir tetap ditampilkan.":"Menunggu koneksi server. Kantor siap menampilkan bot.";$("office-source-dot").className="status-dot unknown";}
-    } finally{clearTimeout(requestTimer);polling=false;pollController=null;schedulePoll();}
-  };
-  document.addEventListener("visibilitychange",()=>{clearTimeout(pollTimer);if(document.hidden)pollController?.abort();else if(!polling)poll();});
-  $("session-search").addEventListener("input",event=>{query=event.target.value.trim().toLocaleLowerCase("id-ID");renderRoster();});
-  document.querySelectorAll("[data-filter]").forEach(button=>button.addEventListener("click",()=>{filter=button.dataset.filter;renderRoster();}));
-  const tick=()=>{const now=new Date();$("clock").textContent=now.toLocaleTimeString("id-ID",{hour12:false});$("clock").dateTime=now.toISOString();};tick();setInterval(tick,1000);
-  drawOffice();
-  Promise.allSettled([
-    ...ASSETS.map(async([id,path,bounds,size])=>{const img=await loadImage(path),canvas=document.createElement("canvas");canvas.width=size[0];canvas.height=size[1];const ctx=canvas.getContext("2d");ctx.imageSmoothingEnabled=false;ctx.drawImage(img,...bounds,0,0,...size);sprites.set(id,canvas);}),
-    ...[0,1,2,3,4].flatMap(character=>["idle","work"].map(async(mode)=>{const img=await loadImage(`char_${character}.png`),canvas=document.createElement("canvas");canvas.width=16;canvas.height=32;const ctx=canvas.getContext("2d");ctx.imageSmoothingEnabled=false;ctx.drawImage(img,mode==="work"?48:0,0,16,32,0,0,16,32);sprites.set(`char-${character}-${mode}`,canvas);}))
-  ]).then(results=>{renderRoster();if(selected){avatar($("selected-avatar"),characterFor(selected));}drawOffice();if(results.some(result=>result.status==="rejected"))$("last-update").textContent="Sebagian gambar belum terbaca. Muat ulang halaman.";});
+    sharedOfficeLayout(state.agents).forEach(position=>{
+      const agent=state.agents.find(item=>item.id===position.id);
+      const desk=desks.get(agent.id);if(!desk)return;
+      desk.button.style.left=(position.normalizedX*100)+"%";
+      desk.button.style.top=((position.normalizedY-.12)*100)+"%";
+      desk.button.style.width="14%";desk.button.style.height="23%";
+      const labelY=matchMedia("(max-width:800px)").matches?(position.normalizedY>.7?.82:.55):position.normalizedNameY;
+      desk.nameplate.style.top=((labelY-(position.normalizedY-.12))/.23*100)+"%";
+    });
+  }
+  function animateOffice(now){
+    animationFrame=null;
+    if(document.hidden||view!=="overview"||motionPaused||reduceOfficeMotion()||!motion||!state.agents.some(agent=>agent.status==="idle"||agent.status==="working"))return;
+    if(now-lastDrawTime>=1000/30){motion.step(now,motionOptions());drawOffice();lastDrawTime=now;}
+    animationFrame=requestAnimationFrame(animateOffice);
+  }
+  function syncMotion(){
+    if(animationFrame!==null)cancelAnimationFrame(animationFrame);animationFrame=null;
+    motion?.step(performance.now(),motionOptions());
+    const enabled=Boolean(motion)&&!motionPaused&&!reduceOfficeMotion();
+    $("motion-toggle").textContent=motionPaused||reduceOfficeMotion()?"Aktifkan gerak":"Jeda gerak";
+    $("motion-toggle").disabled=!motion;
+    $("motion-toggle").setAttribute("aria-pressed",String(enabled));
+    $("motion-toggle").title=reduceOfficeMotion()?"Gerak dikurangi sesuai preferensi perangkat. Aktifkan gerak untuk tab ini.":"Gerak bot saat idle hanya visual; status tetap berasal dari Hermes.";
+    drawOffice();
+    if(enabled&&!document.hidden&&view==="overview"&&state.agents.some(agent=>agent.status==="idle"||agent.status==="working"))animationFrame=requestAnimationFrame(animateOffice);
+  }
+  function chooseBot(id){selected=id;renderOverview();if(view==="audit")chooseAuditProfile(state.agents.find(agent=>agent.id===id)?.profile||id);}
+  function createBot(agent){
+    const button=node("button","team-member");button.type="button";
+    const monogram=node("span","bot-monogram",initials(agent.label)),info=node("span","team-info"),name=node("span","team-name"),platform=node("span","team-platform"),status=node("span","team-status"),dot=node("i","status-dot"),statusLabel=node("span");
+    dot.setAttribute("aria-hidden","true");status.append(dot,statusLabel);info.append(name,platform);button.append(monogram,info,status);button.addEventListener("click",()=>chooseBot(agent.id));roster.set(agent.id,{button,monogram,name,platform,dot,statusLabel});
+    const target=node("button","desk-target");target.type="button";const nameplate=node("span","desk-nameplate"),deskName=node("span","desk-name"),deskStatus=node("span","desk-status"),deskDot=node("i","status-dot"),deskStatusText=node("span");deskDot.setAttribute("aria-hidden","true");deskStatus.append(deskDot,deskStatusText);nameplate.append(deskName,deskStatus);target.append(nameplate);target.addEventListener("click",()=>{chooseBot(agent.id);openAudit();});desks.set(agent.id,{button:target,nameplate,name:deskName,dot:deskDot,status:deskStatusText});
+    const avatar=node("button","avatar-target");avatar.type="button";avatar.dataset.agentId=agent.id;avatar.addEventListener("click",()=>{chooseBot(agent.id);openAudit();});avatars.set(agent.id,avatar);$("avatar-targets").append(avatar);
+  }
+  function renderOverview(){
+    const ids=new Set(state.agents.map(agent=>agent.id));
+    for(const[id,item]of roster)if(!ids.has(id)){item.button.remove();desks.get(id)?.button.remove();avatars.get(id)?.remove();roster.delete(id);desks.delete(id);avatars.delete(id);}
+    $("team-list").querySelectorAll(".list-message").forEach(item=>item.remove());
+    state.agents.forEach(agent=>{
+      if(!roster.has(agent.id))createBot(agent);const item=roster.get(agent.id),desk=desks.get(agent.id);
+      item.name.textContent=agent.label;item.platform.textContent=agent.platforms.join(" · ")||"Hermes";item.monogram.textContent=initials(agent.label);item.dot.className="status-dot "+agent.status;item.statusLabel.textContent=STATUS[agent.status];item.button.setAttribute("aria-pressed",String(selected===agent.id));
+      desk.name.textContent=agent.label;desk.status.textContent=STATUS[agent.status];desk.dot.className="status-dot "+agent.status;desk.button.setAttribute("aria-pressed",String(selected===agent.id));desk.button.setAttribute("aria-label","Pilih "+agent.label+", "+STATUS[agent.status]);desk.button.title=agent.label+" · "+STATUS[agent.status];
+      if(item.button.parentElement!==$("team-list"))$("team-list").append(item.button);if(desk.button.parentElement!==$("desk-targets"))$("desk-targets").append(desk.button);
+    });
+    if(!state.agents.length)$("team-list").append(node("p","list-message",received?"Belum ada bot tersedia dari Hermes.":"Menyambungkan Hermes…"));
+    $("office-occupancy").textContent=received?state.agents.length+" bot":"Memuat bot";
+    const agent=state.agents.find(item=>item.id===selected);$("selected-agent").hidden=!agent;$("selected-empty").hidden=Boolean(agent);
+    if(agent){$("selected-name").textContent=agent.label;$("selected-platform").textContent=agent.platforms.join(" · ")||"Hermes";$("selected-monogram").textContent=initials(agent.label);$("selected-status").textContent=STATUS[agent.status];$("selected-status").className="status-pill "+agent.status;$("selected-detail").textContent=text(agent.detail)||"Status aktivitas belum tersedia.";$("selected-updated").textContent=agent.updated_at?"Diperbarui "+time(agent.updated_at):"Waktu pembaruan belum tersedia.";}
+    $("online-count").textContent=received?state.agents.filter(agent=>agent.gateway?.running===true).length+" / "+state.agents.length:"—";
+    $("working-count").textContent=received?state.agents.filter(agent=>agent.status==="working").length:"—";
+    drawOffice();
+  }
+  function renderSource(){
+    const source=state.source;$("connection-status").textContent=SOURCE[source.state]||"Status belum tersedia";
+    $("connection-signal").className="status-dot "+(source.state==="connected"?"connected":["error","needs_login","stale"].includes(source.state)?"disconnected":"unknown");
+    $("source-status").textContent=source.label||SOURCE[source.state]||"Hermes";$("source-detail").textContent=source.message||(source.state==="connected"?"Status bot diperbarui dari Hermes.":"Menunggu data dari Hermes.");
+    setLink($("source-link"),source.url);setLink($("audit-source-link"),source.url);
+    $("connect-link").hidden=source.state!=="needs_login"&&source.mode!=="status_only";
+    const gateway=state.gateway;$("gateway-detail").hidden=!gateway;
+    if(gateway){const parts=[gateway.running===true?"Gateway aktif":gateway.running===false?"Gateway tidak aktif":"Gateway belum terverifikasi"];if(Number.isFinite(gateway.active_agents)&&gateway.scope==="all_profiles")parts.push(gateway.active_agents+" pekerjaan aktif");else if(Number.isFinite(gateway.active_agents)&&gateway.scope==="default")parts.push(gateway.active_agents+" pekerjaan gateway utama");$("gateway-detail").textContent=parts.join(" · ");}
+    const stamp=source.last_success_at||state.updated_at;$("last-update").textContent=stamp?"Data terakhir "+time(stamp):"Belum menerima data";
+    $("office-message").textContent=source.state==="connected"?"Status dari Hermes. Pilih meja atau bot untuk membuka chat.":SOURCE[source.state]||"Menunggu data Hermes.";
+    $("office-source-dot").className="status-dot "+(source.state==="connected"?"working":"unknown");
+    renderAuditAccess();
+  }
+  function syncProfiles(){
+    const previous=$("audit-profile").value;const signature=JSON.stringify(state.agents.map(agent=>[agent.profile||agent.id,agent.label]));
+    if($("audit-profile").dataset.signature!==signature){$("audit-profile").dataset.signature=signature;$("audit-profile").replaceChildren();state.agents.forEach(agent=>{const option=node("option","",agent.label);option.value=agent.profile||agent.id;$("audit-profile").append(option);});if(!state.agents.length){const option=node("option","","Belum ada bot");option.value="";$("audit-profile").append(option);}}
+    if(audit.profile&&state.agents.some(agent=>(agent.profile||agent.id)===audit.profile))$("audit-profile").value=audit.profile;
+    else if(state.agents.length){const agent=state.agents.find(item=>item.id===selected)||state.agents[0];chooseAuditProfile(agent.profile||agent.id);}
+    else $("audit-profile").value=previous||"";
+    renderBotSwitcher();renderChannels();
+  }
+  function renderBotSwitcher(){
+    const signature=JSON.stringify(state.agents.map(agent=>[agent.profile||agent.id,agent.label]));
+    if($("bot-switcher").dataset.signature!==signature){$("bot-switcher").dataset.signature=signature;$("bot-switcher").replaceChildren();state.agents.forEach(agent=>{const button=node("button","bot-chip",agent.label);button.type="button";button.dataset.profile=agent.profile||agent.id;button.addEventListener("click",()=>{chooseBot(agent.id);chooseAuditProfile(agent.profile||agent.id);});$("bot-switcher").append(button);});}
+    $("bot-switcher").querySelectorAll("button").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.profile===audit.profile)));
+  }
+  function renderChannels(){
+    const agent=state.agents.find(item=>(item.profile||item.id)===audit.profile);const channels=Array.from(new Set(audit.sessions.map(session=>auditChannel(session.source)).concat((agent?.platforms||[]).map(auditChannel)))).filter(Boolean);
+    const labels={telegram:"Telegram",whatsapp:"WhatsApp",api:"API",cli:"CLI"};const signature=JSON.stringify(channels);
+    if($("audit-channel").dataset.signature!==signature){$("audit-channel").dataset.signature=signature;$("audit-channel").replaceChildren();const all=node("option","","Semua kanal");all.value="all";$("audit-channel").append(all);channels.forEach(channel=>{const option=node("option","",labels[channel]||channel);option.value=channel;$("audit-channel").append(option);});}
+    if(audit.channel!=="all"&&!channels.includes(audit.channel))audit.channel="all";$("audit-channel").value=audit.channel;$("audit-channel").disabled=!audit.profile;
+  }
+  function switchView(next,updateHash=true){
+    next=next==="audit"?"audit":"overview";view=next;$("overview-view").hidden=next!=="overview";$("audit-view").hidden=next!=="audit";
+    document.querySelectorAll("[data-view]").forEach(button=>{if(button.dataset.view===next)button.setAttribute("aria-current","page");else button.removeAttribute("aria-current");});
+    if(updateHash&&location.hash!=="#"+next)history.replaceState(null,"","#"+next);
+    if(next==="audit"){syncProfiles();if(audit.profile&&audit.available===null&&!audit.loadingSessions)loadSessions();}
+    syncMotion();
+  }
+  function showState(target,title,detail,options={}){
+    const box=node("div","empty-state"+(options.compact?" compact":""));
+    if(options.loading){box.append(node("span","loading-line","Memuat data…"));}
+    box.append(node("h3","",title),node("p","",detail));
+    if(options.connect){const link=node("a","primary-button","Hubungkan riwayat chat");link.href="/connect.html";box.append(link);}
+    if(options.retry){const button=node("button","secondary-button","Coba lagi");button.type="button";button.addEventListener("click",options.retry);box.append(button);}
+    target.replaceChildren(box);
+  }
+  function renderAuditAccess(){
+    $("audit-access").hidden=!(audit.available===false&&audit.requiresLogin||(audit.available===null&&state.source.mode==="status_only"));
+    $("audit-context").textContent=audit.profile?"Riwayat untuk "+labelFor(audit.profile):"Pilih bot untuk membuka riwayat.";
+  }
+  function chooseAuditProfile(profile){
+    if(profile===audit.profile){$("audit-profile").value=profile;return;}
+    audit.epoch++;audit.messageEpoch++;audit.sessionController?.abort();audit.messageController?.abort();
+    Object.assign(audit,{profile,channel:"all",sessions:[],sessionId:"",session:null,messages:[],available:null,requiresLogin:false,error:"",loadingSessions:false,loadingMessages:false,sessionQuery:"",messageQuery:"",sessionOffset:0,messageOffset:0,hasMoreSessions:false,hasMoreMessages:false});
+    $("audit-profile").value=profile;$("audit-search").value="";$("message-search").value="";renderBotSwitcher();renderChannels();renderAuditAccess();renderSessions();renderThread();
+    if(view==="audit"&&profile)loadSessions();
+  }
+  function renderSessions(){
+    $("audit-session-count").textContent=audit.available===true?audit.sessions.length:"—";
+    if(audit.loadingSessions&&!audit.sessions.length){showState($("audit-sessions"),"Memuat sesi","Mengambil daftar sesi dari Hermes.",{compact:true,loading:true});return;}
+    if(!audit.profile){showState($("audit-sessions"),"Pilih bot","Daftar sesi akan muncul setelah bot tersedia.",{compact:true});return;}
+    if(audit.available===false){showState($("audit-sessions"),audit.requiresLogin?"Riwayat perlu dihubungkan":"Riwayat belum tersedia",audit.error||(audit.requiresLogin?"Hubungkan riwayat Hermes untuk membuka percakapan bot.":"Koneksi riwayat belum dapat dibaca."),{compact:true,connect:audit.requiresLogin,retry:audit.requiresLogin?null:()=>loadSessions()});return;}
+    if(audit.available===null){showState($("audit-sessions"),"Riwayat belum dimuat","Buka audit untuk mengambil sesi dari Hermes.",{compact:true});return;}
+    const query=audit.sessionQuery.toLocaleLowerCase("id-ID");const sessions=audit.sessions.filter(session=>(audit.channel==="all"||auditChannel(session.source)===audit.channel)&&(session.title||session.id||"").toLocaleLowerCase("id-ID").includes(query));
+    const moreButton=()=>{const more=node("button","secondary-button load-more",audit.loadingSessions?"Memuat…":"Sesi lainnya");more.type="button";more.disabled=audit.loadingSessions;more.addEventListener("click",()=>loadSessions(true));return more;};
+    if(!sessions.length){showState($("audit-sessions"),query||audit.channel!=="all"?"Tidak ada sesi yang cocok":"Belum ada sesi",audit.hasMoreSessions?"Coba sesi lainnya; pencarian dan filter berlaku pada sesi yang sudah dimuat.":query?"Coba kata pencarian lain.":audit.channel!=="all"?"Belum ada sesi yang dimuat dari kanal ini.":"Hermes belum mengembalikan sesi untuk bot ini.",{compact:true});if(audit.hasMoreSessions)$("audit-sessions").prepend(moreButton());return;}
+    $("audit-sessions").replaceChildren();sessions.forEach(session=>{const button=node("button","session-button");button.type="button";button.setAttribute("aria-pressed",String(session.id===audit.sessionId));button.append(node("span","session-title",text(session.title)||session.id));const notes=[text(session.source),time(session.last_active)].filter(Boolean);button.append(node("span","session-meta",notes.join(" · ")));const counts=[];if(Number.isFinite(session.message_count))counts.push(session.message_count+" pesan");if(Number.isFinite(session.tool_call_count))counts.push(session.tool_call_count+" tool");if(counts.length)button.append(node("span","session-counts",counts.join(" · ")));button.addEventListener("click",()=>chooseSession(session));$("audit-sessions").append(button);});
+    if(audit.hasMoreSessions)$("audit-sessions").append(moreButton());
+  }
+  async function loadSessions(more=false){
+    if(!audit.profile||audit.loadingSessions)return;
+    if(!more){audit.epoch++;audit.messageEpoch++;audit.messageController?.abort();audit.sessions=[];audit.sessionId="";audit.messages=[];audit.session=null;audit.sessionOffset=0;}
+    const epoch=audit.epoch,profile=audit.profile;const controller=new AbortController();audit.sessionController?.abort();audit.sessionController=controller;audit.loadingSessions=true;renderSessions();if(!more)renderThread();
+    try{
+      const query=new URLSearchParams({profile,limit:"50",offset:String(more?audit.sessionOffset:0)});
+      const response=normalizeAuditPayload(await api("/api/audit/sessions?"+query,controller.signal));
+      if(epoch!==audit.epoch||profile!==audit.profile)return;
+      audit.available=response.available;audit.requiresLogin=response.requires_login;audit.error=response.error;
+      if(response.available){const combined=more?audit.sessions.concat(response.sessions):response.sessions;audit.sessions=Array.from(new Map(combined.map(session=>[session.id,session])).values());audit.sessionOffset=response.pagination.offset+response.pagination.returned;audit.hasMoreSessions=response.pagination.has_more&&response.pagination.returned>0;}
+      else{audit.sessions=[];audit.hasMoreSessions=false;}
+    }catch(error){if(error.name!=="AbortError"&&epoch===audit.epoch){audit.available=false;audit.requiresLogin=error.status===401;audit.error=error.message;audit.hasMoreSessions=false;}}
+    finally{if(epoch===audit.epoch){audit.loadingSessions=false;audit.sessionController=null;renderChannels();renderAuditAccess();renderSessions();if(audit.available===true&&!audit.sessionId){const preferred=preferredConversation(audit.sessions,audit.channel);if(preferred)chooseSession(preferred);else renderThread();}else if(!audit.sessionId)renderThread();}}
+  }
+  function chooseSession(session){audit.messageEpoch++;audit.messageController?.abort();audit.sessionId=session.id;audit.session=session;audit.messages=[];audit.messageOffset=0;audit.hasMoreMessages=false;audit.loadingMessages=false;audit.messageQuery="";$("message-search").value="";renderSessions();loadMessages();}
+  async function loadMessages(older=false){
+    if(!audit.profile||!audit.sessionId||audit.loadingMessages)return;
+    const epoch=audit.epoch,messageEpoch=audit.messageEpoch,profile=audit.profile,sessionId=audit.sessionId;
+    const controller=new AbortController();audit.messageController=controller;audit.loadingMessages=true;renderThread();
+    try{
+      const query=new URLSearchParams({profile,session_id:sessionId,limit:"50",offset:String(older?audit.messageOffset:0),order:"latest"});
+      const response=normalizeAuditPayload(await api("/api/audit/messages?"+query,controller.signal));
+      if(epoch!==audit.epoch||messageEpoch!==audit.messageEpoch||profile!==audit.profile||sessionId!==audit.sessionId)return;
+      if(!response.available){audit.available=false;audit.requiresLogin=response.requires_login;audit.error=response.error;audit.messages=[];audit.hasMoreMessages=false;}
+      else{audit.available=true;audit.requiresLogin=false;audit.error="";const combined=older?response.messages.concat(audit.messages):response.messages;const seen=new Set();audit.messages=combined.filter((message,index)=>{const key=message.id||"source-row-"+index;if(seen.has(key))return false;seen.add(key);return true;});audit.messageOffset=response.pagination.offset+response.pagination.returned;audit.hasMoreMessages=response.pagination.has_more&&response.pagination.returned>0;if(response.session)audit.session=response.session;}
+    }catch(error){if(error.name!=="AbortError"&&epoch===audit.epoch&&messageEpoch===audit.messageEpoch){audit.error=error.message;audit.available=false;audit.requiresLogin=error.status===401;}}
+    finally{if(epoch===audit.epoch&&messageEpoch===audit.messageEpoch){audit.loadingMessages=false;audit.messageController=null;renderAuditAccess();renderThread();}}
+  }
+  function toolDisclosure(name,content){const detail=node("details","tool-disclosure");detail.append(node("summary","",name),node("pre","",content));return detail;}
+  function renderThread(){
+    $("export-session").disabled=audit.available!==true||!audit.sessionId||!audit.messages.length;
+    $("message-count").hidden=!audit.messages.length;$("message-count").textContent=audit.messages.length+" pesan dimuat";
+    $("thread-heading").textContent=audit.session?text(audit.session.title)||audit.session.id:"Percakapan";
+    const resolvedId=audit.session?.id||audit.sessionId;$("thread-subtitle").textContent=audit.session?labelFor(audit.profile)+" · "+(text(audit.session.source)||"Hermes")+" · "+resolvedId.slice(0,12):"Pilih sesi untuk melihat pesan.";$("thread-subtitle").title=audit.session?"Sesi dipilih: "+audit.sessionId+"; sesi sumber: "+resolvedId:"";
+    if(audit.loadingMessages&&!audit.messages.length){showState($("audit-thread"),"Memuat percakapan","Mengambil pesan asli dari Hermes.",{loading:true});return;}
+    if(audit.available===false){showState($("audit-thread"),audit.requiresLogin?"Hubungkan riwayat chat":"Percakapan belum dapat dimuat",audit.error||(audit.requiresLogin?"Status bot tetap tersedia. Hubungkan riwayat untuk membaca isi chat.":"Coba memuat ulang riwayat Hermes."),{connect:audit.requiresLogin,retry:audit.requiresLogin?null:()=>audit.sessionId?loadMessages():loadSessions()});return;}
+    if(!audit.sessionId){showState($("audit-thread"),"Pilih sesi percakapan","Pesan asli beserta peran, waktu, dan aktivitas tool akan ditampilkan di sini.");return;}
+    const query=audit.messageQuery.toLocaleLowerCase("id-ID");const messages=audit.messages.filter(message=>[message.content,message.tool_name,serialize(message.tool_calls)].join(" ").toLocaleLowerCase("id-ID").includes(query));
+    const olderButton=()=>{const more=node("button","secondary-button older-messages",audit.loadingMessages?"Memuat pesan…":"Pesan lebih lama");more.type="button";more.disabled=audit.loadingMessages;more.addEventListener("click",()=>loadMessages(true));return more;};
+    if(!messages.length){showState($("audit-thread"),query?"Tidak ada pesan yang cocok":audit.hasMoreMessages?"Belum ada pesan di halaman ini":"Belum ada pesan",query?"Pencarian berlaku pada pesan yang sudah dimuat.":audit.hasMoreMessages?"Muat pesan lebih lama untuk melanjutkan penelusuran.":"Tidak ada pesan yang tersedia untuk sesi ini.");if(audit.hasMoreMessages)$("audit-thread").prepend(olderButton());return;}
+    const scroll=$("audit-thread").scrollTop;$("audit-thread").replaceChildren();
+    if(audit.hasMoreMessages)$("audit-thread").append(olderButton());
+    messages.forEach(message=>{
+      const article=node("article","message "+(message.role==="user"?"user":"")),header=node("div","message-header"),role=node("span","message-role",ROLE[message.role]||"Pesan"),stamp=node("time","message-time",time(message.timestamp)||"Waktu tidak tersedia");if(message.timestamp)stamp.dateTime=message.timestamp;header.append(role,stamp);article.append(header);
+      if(message.role==="tool"){article.append(toolDisclosure("Hasil tool"+(message.tool_name?": "+message.tool_name:""),message.content));}
+      else if(message.content)article.append(node("div","message-content",message.content));
+      message.tool_calls.forEach(call=>article.append(toolDisclosure("Tool: "+(call.name||"Tanpa nama"),serialize(call.arguments))));
+      if(message.attachment_count)article.append(node("p","message-note",message.attachment_count+" lampiran tercatat. Buka Hermes untuk melihat lampiran."));
+      if(message.truncated)article.append(node("p","message-note","Isi pesan dipotong. Buka Hermes untuk versi lengkap."));
+      $("audit-thread").append(article);
+    });
+    $("audit-thread").scrollTop=scroll;
+  }
+  function schedulePoll(){clearTimeout(pollTimer);if(!document.hidden)pollTimer=setTimeout(poll,5000);}
+  async function poll(){
+    if(polling||document.hidden)return;clearTimeout(pollTimer);polling=true;const controller=new AbortController();pollController=controller;const timer=setTimeout(()=>controller.abort(),15000);
+    try{const next=normalizeOfficeState(await api("/api/state",controller.signal));state=next;state.agents=state.agents.map(agent=>({...agent,status:STATUS[agent.status]?agent.status:"unknown"}));received=true;if(!state.agents.some(agent=>agent.id===selected))selected=state.agents[0]?.id||null;motion?.update(state.agents,performance.now(),motionOptions());renderOverview();renderSource();syncProfiles();syncMotion();}
+    catch(error){if(!(error.name==="AbortError"&&document.hidden)){$("connection-status").textContent=error.status===401?"Masuk diperlukan":"Koneksi terputus";$("connection-signal").className="status-dot disconnected";$("office-source-dot").className="status-dot unknown";$("office-message").textContent=received?"Koneksi terputus. Status terakhir tetap ditampilkan.":"Menunggu koneksi. Kantor siap menampilkan bot.";$("source-detail").textContent=error.message;}}
+    finally{clearTimeout(timer);polling=false;pollController=null;schedulePoll();}
+  }
+  function openAudit(){const agent=state.agents.find(item=>item.id===selected);if(agent)chooseAuditProfile(agent.profile||agent.id);switchView("audit");}
+  document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>switchView(button.dataset.view)));
+  document.querySelectorAll("[data-open-audit]").forEach(button=>button.addEventListener("click",openAudit));
+  $("selected-audit").addEventListener("click",openAudit);
+  $("audit-profile").addEventListener("change",event=>chooseAuditProfile(event.target.value));
+  $("audit-channel").addEventListener("change",event=>{audit.channel=event.target.value;const current=audit.sessions.find(session=>session.id===audit.sessionId);renderSessions();if(!current||audit.channel!=="all"&&auditChannel(current.source)!==audit.channel){const preferred=preferredConversation(audit.sessions,audit.channel);if(preferred)chooseSession(preferred);else{audit.messageEpoch++;audit.messageController?.abort();audit.sessionId="";audit.session=null;audit.messages=[];audit.loadingMessages=false;renderThread();}}});
+  $("audit-search").addEventListener("input",event=>{audit.sessionQuery=event.target.value.trim();renderSessions();});
+  $("message-search").addEventListener("input",event=>{audit.messageQuery=event.target.value.trim();renderThread();});
+  $("refresh-audit").addEventListener("click",()=>{if(!audit.loadingSessions&&!audit.loadingMessages)loadSessions();});
+  $("export-session").addEventListener("click",()=>{if(audit.available!==true||!audit.sessionId||!audit.messages.length)return;const blob=new Blob([JSON.stringify({scope:"loaded_messages",loaded_count:audit.messages.length,source_rows_scanned:audit.messageOffset,has_more:audit.hasMoreMessages,profile:audit.profile,requested_session_id:audit.sessionId,session_id:audit.session?.id||audit.sessionId,session:audit.session,messages:audit.messages},null,2)],{type:"application/json"});const url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=("hermes-loaded-"+audit.profile+"-"+audit.sessionId).replace(/[^a-zA-Z0-9_.-]/g,"-").slice(0,160)+".json";document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+  addEventListener("hashchange",()=>switchView(location.hash==="#audit"?"audit":"overview",false));
+  addEventListener("resize",drawOffice);
+  $("motion-toggle").addEventListener("click",()=>{if(motionPaused||reduceOfficeMotion()){motionOverride=true;motionPaused=false;}else motionPaused=true;syncMotion();});
+  reducedMotion.addEventListener("change",syncMotion);
+  document.addEventListener("visibilitychange",()=>{clearTimeout(pollTimer);syncMotion();if(document.hidden)pollController?.abort();else if(!polling)poll();});
+  const tick=()=>{const now=new Date();$("clock").textContent=now.toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit",hour12:false});$("clock").dateTime=now.toISOString();};tick();setInterval(tick,1000);
+  switchView(location.hash==="#audit"?"audit":"overview",false);drawOffice();renderOverview();
+  Promise.allSettled([imageFor("hermes-hq-office.png").then(image=>{background=image;}),...[0,1,2,3,4].map(async character=>{characters.set(character,await imageFor("char_"+character+".png"));})]
+  ).then(results=>{drawOffice();if(results.some(result=>result.status==="rejected"))$("office-message").textContent="Sebagian gambar belum terbaca. Muat ulang halaman.";});
   poll();
 })();

@@ -3,35 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Detail sesi Hermes · Control Room</title>
+  <title>Hubungkan riwayat chat · Hermes Control Room</title>
   <style>
-    :root{color-scheme:dark;font-family:Segoe UI,Arial,sans-serif;color:#dfe9ff;background:#0c172a}
-    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}
-    main{width:min(100%,510px);padding:30px;background:#15243d;border:1px solid #3b5375;border-radius:12px;box-shadow:0 20px 60px #0005}
-    .eyebrow{font:12px Consolas,monospace;color:#8caad6;letter-spacing:.12em}h1{font-size:26px;margin:15px 0}p{line-height:1.6;color:#b9cae5}
-    .source{font:12px Consolas,monospace;overflow-wrap:anywhere;background:#0c172a;padding:13px;border:1px solid #344e70;border-radius:6px}
-    label{display:block;margin:20px 0 7px;color:#dfe9ff}input{width:100%;font:inherit;color:inherit;background:#0d1a2e;border:1px solid #4b6387;border-radius:6px;padding:12px}
-    button{width:100%;margin-top:22px;padding:13px;border:1px solid #84b6f0;border-radius:6px;background:#244e80;color:#fff;font:600 16px Segoe UI,Arial,sans-serif;cursor:pointer}
-    button:disabled{opacity:.5;cursor:wait}input:focus-visible,button:focus-visible,a:focus-visible{outline:3px solid #f6c16b;outline-offset:3px}
-    a{color:#9dc9ff}.note{font-size:13px}.message{min-height:24px;color:#f6c16b}footer{margin-top:25px;font-size:14px}
+    :root{color-scheme:dark;font-family:"Segoe UI",Arial,sans-serif;color:#e7eef8;background:#0b1425;font-size:14px}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:32px 20px}
+    main{width:min(100%,480px);padding:32px;background:#122039;border:1px solid #283b58;border-radius:12px;box-shadow:0 8px 30px #0002}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:650;font-size:15px;margin-bottom:28px}.brand-mark{display:grid;place-items:center;background:#1c3455;color:#76aff7;border-radius:8px;width:36px;height:36px}
+    .eyebrow{font-size:12px;font-weight:600;color:#a0aec4}h1{font-size:26px;line-height:1.25;letter-spacing:-.6px;margin:8px 0 12px;font-weight:650}p{line-height:1.65;color:#a0aec4;margin:0 0 20px}
+    .source-wrap{padding:14px 16px;border:1px solid #283b58;border-radius:8px;background:#0d192d}.source-label{display:block;font-size:12px;color:#a0aec4;margin-bottom:5px}.source{font:12px/1.7 Consolas,monospace;overflow-wrap:anywhere;color:#e7eef8}
+    label{display:block;margin:20px 0 8px;font-weight:600;font-size:13px}input{width:100%;font:inherit;color:inherit;background:#0d192d;border:1px solid #425677;border-radius:6px;padding:11px 12px;min-height:44px}
+    input:hover{border-color:#76aff7}button{width:100%;margin-top:24px;padding:12px;border:1px solid #4b83c9;border-radius:6px;background:#2864b8;color:#fff;font:600 14px "Segoe UI",Arial,sans-serif;cursor:pointer;min-height:44px}button:hover:not(:disabled){background:#3478d3}
+    button:disabled{opacity:.55;cursor:wait}input:focus-visible,button:focus-visible,a:focus-visible{outline:3px solid #76aff7;outline-offset:3px}
+    a{color:#76aff7;text-decoration:none}a:hover{text-decoration:underline}.note{font-size:12px;margin:18px 0 0;line-height:1.65}.message{min-height:22px;color:#e9ba62;font-size:13px;margin:12px 0 0}footer{margin-top:24px;padding-top:20px;border-top:1px solid #283b58;font-size:13px}@media(max-width:480px){body{padding:20px 12px}main{padding:24px}h1{font-size:24px}}
   </style>
 </head>
 <body>
   <main>
-    <div class="eyebrow">HERMES → CONTROL ROOM</div>
-    <h1>Tambahkan detail sesi Hermes</h1>
-    <p>Status bot sudah bisa dipantau. Pakai akun <strong>dashboard Hermes yang sudah ada</strong> kalau lo juga mau melihat detail sesi di control room.</p>
-    <div class="source" id="source">Memeriksa koneksi…</div>
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg></span>Hermes Control Room</div>
+    <div class="eyebrow">Koneksi riwayat</div>
+    <h1>Hubungkan riwayat chat</h1>
+    <p>Masuk dengan akun dashboard Hermes untuk membaca sesi dan percakapan tiap bot di Audit chat.</p>
+    <div class="source-wrap"><span class="source-label">Dashboard Hermes yang dihubungkan</span><div class="source" id="source">Memeriksa koneksi…</div></div>
     <form id="connect-form">
       <label for="username">Username dashboard Hermes</label>
       <input id="username" name="username" autocomplete="username" value="hermes" required maxlength="200">
       <label for="password">Password dashboard Hermes</label>
       <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096">
-      <button id="submit" disabled>Hubungkan detail sesi</button>
+      <button id="submit" disabled>Hubungkan riwayat chat</button>
     </form>
-    <p class="note">Password dikirim lewat koneksi aman ke Hermes lalu dibuang. Control room di VPS lo menyimpan sesi login untuk membaca status dan sesi bot. Masukkan password langsung di sini, jangan di chat.</p>
+    <p class="note">Password diteruskan ke dashboard Hermes lewat HTTPS dan tidak disimpan. Sesi login disimpan di komputer ini untuk membaca riwayat. Masukkan password langsung di formulir ini.</p>
     <p class="message" id="message" role="status" aria-live="polite"></p>
-    <footer><a href="/">← Kembali ke control room</a></footer>
+    <footer><a href="/#audit">← Kembali ke Audit chat</a></footer>
+    <noscript><p>Aktifkan JavaScript untuk menghubungkan riwayat chat.</p></noscript>
   </main>
   <script>
     let connectToken='';
@@ -53,8 +56,8 @@
         const response=await fetch('/api/connect',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':connectToken},body});
         const data=await response.json();
         if(!response.ok||data.ok===false)throw new Error(data.message||data.error||'Login belum berhasil. Periksa username dan password Hermes.');
-        message.textContent='Hermes terhubung. Membuka control room…';
-        location.assign('/');
+        message.textContent='Riwayat Hermes terhubung. Membuka Audit chat…';
+        location.assign('/#audit');
       }catch(error){message.textContent=error.message;button.disabled=false;}
     });
   </script>
